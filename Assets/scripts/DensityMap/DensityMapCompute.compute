@@ -1,0 +1,155 @@
+#pragma kernel ClearDensityVolume
+#pragma kernel SplatParticlesToDensity
+#pragma kernel FinalizeDensityVolume
+
+#define THREADS 256
+static const float PI = 3.1415926535;
+
+struct ParticleData
+{
+    float4 position;
+    float4 predicted;
+    float4 velocity;
+    float4 delta;
+    float density;
+    float lambda;
+    float pad0;
+    float pad1;
+};
+
+StructuredBuffer<ParticleData> Particles;
+RWStructuredBuffer<uint> DensityAccum;
+RWTexture3D<float4> DensityMap;
+
+// uniforms (как в JS)
+int N;
+int volumeResolutionX;
+int volumeResolutionY;
+int volumeResolutionZ;
+
+float4 boundsMin;   // xyz
+float4 boundsSize;  // xyz
+float4 voxelSize;   // xyz
+
+float h;
+float particleMass;
+float densityStorageScale;
+
+uint FlatIndex(int x, int y, int z)
+{
+    return (uint)(x + y * volumeResolutionX + z * volumeResolutionX * volumeResolutionY);
+}
+
+float W_poly6_dist2(float dist2)
+{
+    float h2 = h * h;
+    float x = h2 - dist2;
+    if (x <= 0.0) return 0.0;
+
+    // coeff = 315 / (64*pi*h^9)
+    float h3 = h2 * h;
+    float h6 = h3 * h3;
+    float h9 = h6 * h3;
+    float coeff = 315.0 / (64.0 * PI * h9);
+
+    return coeff * x * x * x;
+}
+
+[numthreads(THREADS, 1, 1)]
+void ClearDensityVolume(uint3 id : SV_DispatchThreadID)
+{
+    uint total = (uint)(volumeResolutionX * volumeResolutionY * volumeResolutionZ);
+    if (id.x >= total) return;
+    DensityAccum[id.x] = 0u;
+}
+
+[numthreads(THREADS, 1, 1)]
+void SplatParticlesToDensity(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= N) return;
+
+    float3 p = Particles[id.x].position.xyz; // как в JS
+    float h2 = h * h;
+
+    int3 res = int3(volumeResolutionX, volumeResolutionY, volumeResolutionZ);
+
+    int3 minV = (int3)floor((p - h.xxx - boundsMin.xyz) / voxelSize.xyz);
+    int3 maxV = (int3)ceil ((p + h.xxx - boundsMin.xyz) / voxelSize.xyz);
+
+    minV = max(minV, int3(0,0,0));
+    maxV = min(maxV, res - int3(1,1,1));
+
+    for (int z = minV.z; z <= maxV.z; z++)
+    {
+        for (int y = minV.y; y <= maxV.y; y++)
+        {
+            for (int x = minV.x; x <= maxV.x; x++)
+            {
+                float3 cellCenter = boundsMin.xyz + (float3(x, y, z) + 0.5) * voxelSize.xyz;
+                float3 d = cellCenter - p;
+                float dist2 = dot(d, d);
+
+                if (dist2 >= h2) continue;
+
+                float contribution = particleMass * W_poly6_dist2(dist2);
+
+                float addF = round(max(0.0, contribution) * densityStorageScale);
+                uint add = (uint)addF;
+                if (add == 0u) continue;
+
+                uint idx = FlatIndex(x, y, z);
+
+                uint oldValue;
+                InterlockedAdd(DensityAccum[idx], add, oldValue);
+            }
+        }
+    }
+}
+
+[numthreads(THREADS, 1, 1)]
+void FinalizeDensityVolume(uint3 id : SV_DispatchThreadID)
+{
+    uint total = (uint)(volumeResolutionX * volumeResolutionY * volumeResolutionZ);
+    if (id.x >= total) return;
+
+    int x = (int)(id.x % (uint)volumeResolutionX);
+    int y = (int)((id.x / (uint)volumeResolutionX) % (uint)volumeResolutionY);
+    int z = (int)(id.x / (uint)(volumeResolutionX * volumeResolutionY));
+    int3 c = int3(x, y, z);
+
+    float sum = 0.0;
+    float wsum = 0.0;
+
+    int3 res = int3(volumeResolutionX, volumeResolutionY, volumeResolutionZ);
+
+    // 3x3x3 smoothing kernel, weights: (dx==0?2:1)*(dy==0?2:1)*(dz==0?2:1)
+    for (int dz = -1; dz <= 1; dz++)
+    {
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                int3 n = c + int3(dx, dy, dz);
+
+                if (n.x < 0 || n.y < 0 || n.z < 0 || n.x >= res.x || n.y >= res.y || n.z >= res.z)
+                    continue;
+
+                float wx = (dx == 0) ? 2.0 : 1.0;
+                float wy = (dy == 0) ? 2.0 : 1.0;
+                float wz = (dz == 0) ? 2.0 : 1.0;
+                float w = wx * wy * wz;
+
+                uint vU = DensityAccum[FlatIndex(n.x, n.y, n.z)];
+                float v = (float)vU;
+
+                sum += v * w;
+                wsum += w;
+            }
+        }
+    }
+
+    float denom = max(1e-6, wsum * densityStorageScale);
+    float density = sum / denom;
+
+    DensityMap[int3(x, y, z)] = float4(density, 0.0, 0.0, 1.0);
+}
