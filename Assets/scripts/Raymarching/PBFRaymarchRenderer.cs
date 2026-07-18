@@ -16,9 +16,14 @@ public class PBFRaymarchCamera : MonoBehaviour
     public float densityOffset = 25.0f;
     public float densityMultiplier = 0.0045f;
     public float stepSize = 0.03f;
+
+    [Header("Refraction")]
+    public float indexOfRefraction = 1.333f;   // вода ~1.333
+    public float refractionStrength = 1.0f;    // 0..1 (можно >1 для усиления)
+
     [Header("Color")]
-    // добавьте в параметры
     public Vector3 scatteringCoefficients = new Vector3(1f, 1f, 1f);
+
     [Header("Lighting")]
     public Light directionalLight;                 // если null, возьмём RenderSettings.sun
     public float lightMarchStepSize = 0.15f;       // шаг марча по лучу к солнцу
@@ -48,6 +53,12 @@ public class PBFRaymarchCamera : MonoBehaviour
         }
     }
 
+    private void OnEnable()
+    {
+        // Нужна depth texture для screen-space refraction
+        Cam.depthTextureMode |= DepthTextureMode.Depth;
+    }
+
     void OnDisable()
     {
         if (_raymarchMat)
@@ -73,30 +84,39 @@ public class PBFRaymarchCamera : MonoBehaviour
             return;
         }
 
-        // Передача данных как в вашей заготовке + нужные параметры/текстура/границы
+        // фон (source) нужен для рефракции
+        mat.SetTexture("_MainTex", source);
+
+        // Матрицы луча
         mat.SetMatrix("_CamFrustum", CamFrustum(Cam));
         mat.SetMatrix("_CamToWorld", Cam.cameraToWorldMatrix);
 
+        // Марч
         mat.SetFloat("_MaxDistance", maxDistance);
         mat.SetFloat("_DensityOffset", densityOffset);
         mat.SetFloat("_DensityMultiplier", densityMultiplier);
         mat.SetFloat("_StepSize", stepSize);
 
+        // Bounds
         Vector3 bmin = sim.boxMin;
         Vector3 bsize = sim.boxMax - sim.boxMin;
         mat.SetVector("_BoundsMin", new Vector4(bmin.x, bmin.y, bmin.z, 0));
         mat.SetVector("_BoundsSize", new Vector4(bsize.x, bsize.y, bsize.z, 0));
 
+        // Volume texture
         mat.SetTexture("_DensityMap", densityMap.DensityTexture);
-        
+
+        // Scattering
         mat.SetVector("_ScatteringCoefficients",
             new Vector4(scatteringCoefficients.x, scatteringCoefficients.y, scatteringCoefficients.z, 0));
-        
+
+        // Refraction params
+        mat.SetFloat("_IOR", indexOfRefraction);
+        mat.SetFloat("_RefractionStrength", refractionStrength);
+
+        // Light
         Light sun = directionalLight != null ? directionalLight : RenderSettings.sun;
 
-        // dirToSun: направление ОТ точки в сцене К солнцу.
-        // Для Directional Light в Unity лучи света идут вдоль -forward,
-        // значит "к солнцу" = forward.
         Vector3 dirToSun = sun != null ? -sun.transform.forward : Vector3.up;
         dirToSun.Normalize();
 
@@ -109,13 +129,9 @@ public class PBFRaymarchCamera : MonoBehaviour
 
         mat.SetVector("_DirToSun", new Vector4(dirToSun.x, dirToSun.y, dirToSun.z, 0));
         mat.SetFloat("_LightMarchStepSize", lightMarchStepSize);
-
-        mat.SetVector("_ScatteringCoefficients",
-            new Vector4(scatteringCoefficients.x, scatteringCoefficients.y, scatteringCoefficients.z, 0));
-
         mat.SetVector("_LightColor", new Vector4(lightColor.x, lightColor.y, lightColor.z, 0));
 
-        // Fullscreen quad как в вашей заготовке (vertex.z несёт индекс 0..3)
+        // Fullscreen quad (vertex.z несёт индекс 0..3)
         RenderTexture.active = destination;
         GL.PushMatrix();
         GL.LoadOrtho();
@@ -123,19 +139,19 @@ public class PBFRaymarchCamera : MonoBehaviour
 
         GL.Begin(GL.QUADS);
 
-        // BL (index 3 in your original, but we keep your exact mapping)
+        // BL (index 3)
         GL.MultiTexCoord2(0, 0.0f, 0.0f);
         GL.Vertex3(0.0f, 0.0f, 3.0f);
 
-        // BR
+        // BR (index 2)
         GL.MultiTexCoord2(0, 1.0f, 0.0f);
         GL.Vertex3(1.0f, 0.0f, 2.0f);
 
-        // TR
+        // TR (index 1)
         GL.MultiTexCoord2(0, 1.0f, 1.0f);
         GL.Vertex3(1.0f, 1.0f, 1.0f);
 
-        // TL
+        // TL (index 0)
         GL.MultiTexCoord2(0, 0.0f, 1.0f);
         GL.Vertex3(0.0f, 1.0f, 0.0f);
 

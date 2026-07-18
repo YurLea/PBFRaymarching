@@ -413,9 +413,9 @@ MonoBehaviour:
   densityOffset: 30
   densityMultiplier: 0.008
   stepSize: 0.095
-  scatteringCoefficients: {x: 3.82, y: 2.84, z: 1.09}
+  scatteringCoefficients: {x: 3.7, y: 2.43, z: 1.08}
   directionalLight: {fileID: 705507994}
-  lightMarchStepSize: 0.4
+  lightMarchStepSize: 0.35
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0
