@@ -16,6 +16,8 @@ public class PBFRaymarchCamera : MonoBehaviour
     public float densityOffset = 25.0f;
     public float densityMultiplier = 0.0045f;
     public float stepSize = 0.03f;
+    // добавьте в параметры
+    public Vector3 scatteringCoefficients = new Vector3(1f, 1f, 1f);
 
     private Camera _cam;
     private Material _raymarchMat;
@@ -82,6 +84,9 @@ public class PBFRaymarchCamera : MonoBehaviour
         mat.SetVector("_BoundsSize", new Vector4(bsize.x, bsize.y, bsize.z, 0));
 
         mat.SetTexture("_DensityMap", densityMap.DensityTexture);
+        
+        mat.SetVector("_ScatteringCoefficients",
+            new Vector4(scatteringCoefficients.x, scatteringCoefficients.y, scatteringCoefficients.z, 0));
 
         // Fullscreen quad как в вашей заготовке (vertex.z несёт индекс 0..3)
         RenderTexture.active = destination;

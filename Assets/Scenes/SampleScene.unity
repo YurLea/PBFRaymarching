@@ -259,7 +259,7 @@ MonoBehaviour:
   gravity: {x: 0, y: -8, z: 0}
   xsphC: 0.00002
   boxMin: {x: 0, y: 0, z: 0}
-  boxMax: {x: 11, y: 25, z: 6.5}
+  boxMax: {x: 9.5, y: 18, z: 6.5}
   particleRadius: 0.2
   damp: -0.5
   Nx: 10
@@ -383,7 +383,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 963194225}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: ce4f80b9691512e41a14483b6e3306ab, type: 3}
   m_Name: 
@@ -401,7 +401,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 963194225}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: c0d59f6b478a6a34d878968da3897aa9, type: 3}
   m_Name: 
@@ -411,8 +411,9 @@ MonoBehaviour:
   _shader: {fileID: 4800000, guid: 6ed9101590b62e845acf0e09bef7b1fe, type: 3}
   maxDistance: 50
   densityOffset: 25
-  densityMultiplier: 0.005
-  stepSize: 0.01
+  densityMultiplier: 0.004
+  stepSize: 0.075
+  scatteringCoefficients: {x: 1, y: 1.42, z: 2.35}
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0

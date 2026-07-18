@@ -4,6 +4,7 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
     {
         _MainTex ("Texture", 2D) = "white" {}
         _DensityMap ("Density Map (3D)", 3D) = "" {}
+        _ScatteringCoefficients ("Scattering Coefficients (RGB)", Vector) = (1,1,1,0)
     }
 
     SubShader
@@ -32,9 +33,11 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
             float _DensityMultiplier;
             float _StepSize;
 
+            float4 _ScatteringCoefficients; // xyz used
+
             struct appdata
             {
-                float4 vertex : POSITION;  // z contains corner index 0..3 (from GL.Vertex3 z)
+                float4 vertex : POSITION;  // z contains corner index 0..3
                 float2 uv     : TEXCOORD0;
             };
 
@@ -56,8 +59,8 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 o.uv = v.uv;
 
                 float3 rayVS = _CamFrustum[(int)index].xyz;
-                rayVS /= max(1e-6, abs(rayVS.z)); // normalize so z = -1
-                o.rayWS = mul(_CamToWorld, float4(rayVS, 0.0)).xyz; // direction to world
+                rayVS /= max(1e-6, abs(rayVS.z));
+                o.rayWS = mul(_CamToWorld, float4(rayVS, 0.0)).xyz;
 
                 return o;
             }
@@ -92,10 +95,11 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 if (uvw.x < 0 || uvw.y < 0 || uvw.z < 0 || uvw.x > 1 || uvw.y > 1 || uvw.z > 1)
                     return 0.0;
 
-                return tex3D(_DensityMap, uvw).r; // density stored in R
+                return tex3D(_DensityMap, uvw).r;
             }
 
-            float RayMarchDensity(float3 roWorld, float3 rdWorld)
+            // Возвращаем RGB (totalLight), как на вашем скрине
+            float3 RayMarchFluid(float3 roWorld, float3 rdWorld)
             {
                 float3 bmin = _BoundsMin.xyz;
                 float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
@@ -104,9 +108,9 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
 
                 const float TinyNudge = 1e-3;
                 if (hit.y <= 0.0)
-                    return 0.0;
+                    return 0.0.xxx;
 
-                float step = max(_StepSize, 1e-4);
+                float stepSize = max(_StepSize, 1e-4);
 
                 float dstToBox = hit.x;
                 float dstThrough = min(hit.y, _MaxDistance);
@@ -114,24 +118,33 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float t = TinyNudge;
                 float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
 
-                float accum = 0.0;
+                float densityAlongViewRay = 0.0;
+                float3 totalLight = 0.0.xxx;
+
+                float3 scatteringCoefficients = max(_ScatteringCoefficients.xyz, 0.0.xxx);
 
                 [loop]
                 for (int i = 0; i < 4096; i++)
                 {
                     if (t >= tEnd) break;
 
-                    float3 p = roWorld + rdWorld * (dstToBox + t);
+                    float3 samplePos = roWorld + rdWorld * (dstToBox + t);
 
-                    float raw = SampleDensityWorld(p);
+                    float raw = SampleDensityWorld(samplePos);
                     float dens = max(0.0, raw - _DensityOffset);
 
-                    accum += dens * _DensityMultiplier * step;
+                    float densityAlongStep = dens * _DensityMultiplier * stepSize;
+                    densityAlongViewRay += densityAlongStep;
 
-                    t += step;
+                    // --- код как на вашем скрине ---
+                    float3 inScatteredLight = float3(1, 1, 1) * densityAlongStep * scatteringCoefficients;
+                    float3 viewRayTransmittance = exp(-densityAlongViewRay * scatteringCoefficients);
+                    totalLight += inScatteredLight * viewRayTransmittance;
+
+                    t += stepSize;
                 }
 
-                return accum;
+                return totalLight;
             }
 
             fixed4 frag(v2f i) : SV_Target
@@ -139,11 +152,11 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float3 ro = _WorldSpaceCameraPos;
                 float3 rd = normalize(i.rayWS);
 
-                float d = RayMarchDensity(ro, rd);
+                float3 col = RayMarchFluid(ro, rd);
 
-                // grayscale debug
-                float v = saturate(d);
-                return fixed4(v, v, v, 1.0);
+                // debug clamp
+                col = saturate(col);
+                return fixed4(col, 1.0);
             }
             ENDCG
         }
