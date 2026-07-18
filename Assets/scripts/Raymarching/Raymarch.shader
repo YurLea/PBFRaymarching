@@ -5,6 +5,9 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
         _MainTex ("Texture", 2D) = "white" {}
         _DensityMap ("Density Map (3D)", 3D) = "" {}
         _ScatteringCoefficients ("Scattering Coefficients (RGB)", Vector) = (1,1,1,0)
+        _DirToSun ("Dir To Sun (WS)", Vector) = (0,1,0,0)
+        _LightColor ("Light Color (RGB)", Vector) = (1,1,1,0)
+        _LightMarchStepSize ("Light March Step Size", Float) = 0.15
     }
 
     SubShader
@@ -33,11 +36,14 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
             float _DensityMultiplier;
             float _StepSize;
 
-            float4 _ScatteringCoefficients; // xyz used
+            float4 _ScatteringCoefficients; // xyz
+            float4 _DirToSun;               // xyz
+            float4 _LightColor;             // xyz
+            float  _LightMarchStepSize;
 
             struct appdata
             {
-                float4 vertex : POSITION;  // z contains corner index 0..3
+                float4 vertex : POSITION;
                 float2 uv     : TEXCOORD0;
             };
 
@@ -98,7 +104,44 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 return tex3D(_DensityMap, uvw).r;
             }
 
-            // Возвращаем RGB (totalLight), как на вашем скрине
+            float CalculateDensityAlongRay(float3 roWorld, float3 rdWorld, float stepSize)
+            {
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+
+                float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
+                const float TinyNudge = 1e-3;
+
+                if (hit.y <= 0.0)
+                    return 0.0;
+
+                float step = max(stepSize, 1e-4);
+
+                float dstToBox = hit.x;
+                float dstThrough = hit.y;
+
+                float t = TinyNudge;
+                float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
+
+                float accum = 0.0;
+
+                [loop]
+                for (int i = 0; i < 512; i++)
+                {
+                    if (t >= tEnd) break;
+
+                    float3 p = roWorld + rdWorld * (dstToBox + t);
+
+                    float raw = SampleDensityWorld(p);
+                    float dens = max(0.0, raw - _DensityOffset);
+
+                    accum += dens * _DensityMultiplier * step;
+                    t += step;
+                }
+
+                return accum;
+            }
+
             float3 RayMarchFluid(float3 roWorld, float3 rdWorld)
             {
                 float3 bmin = _BoundsMin.xyz;
@@ -108,7 +151,7 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
 
                 const float TinyNudge = 1e-3;
                 if (hit.y <= 0.0)
-                    return 0.0.xxx;
+                    return float3(0,0,0);
 
                 float stepSize = max(_StepSize, 1e-4);
 
@@ -119,9 +162,12 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
 
                 float densityAlongViewRay = 0.0;
-                float3 totalLight = 0.0.xxx;
+                float3 totalLight = float3(0,0,0);
 
-                float3 scatteringCoefficients = max(_ScatteringCoefficients.xyz, 0.0.xxx);
+                float3 scattering = max(_ScatteringCoefficients.xyz, float3(0,0,0));
+                float3 dirToSun = normalize(_DirToSun.xyz);
+                float3 lightColor = max(_LightColor.xyz, float3(0,0,0));
+                float lightStep = max(_LightMarchStepSize, 1e-4);
 
                 [loop]
                 for (int i = 0; i < 4096; i++)
@@ -136,9 +182,12 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                     float densityAlongStep = dens * _DensityMultiplier * stepSize;
                     densityAlongViewRay += densityAlongStep;
 
-                    // --- код как на вашем скрине ---
-                    float3 inScatteredLight = float3(1, 1, 1) * densityAlongStep * scatteringCoefficients;
-                    float3 viewRayTransmittance = exp(-densityAlongViewRay * scatteringCoefficients);
+                    float densityAlongSunRay = CalculateDensityAlongRay(samplePos, dirToSun, lightStep);
+
+                    float3 transmittedSunLight = exp(-densityAlongSunRay * scattering);
+                    float3 inScatteredLight = transmittedSunLight * densityAlongStep * scattering * lightColor;
+
+                    float3 viewRayTransmittance = exp(-densityAlongViewRay * scattering);
                     totalLight += inScatteredLight * viewRayTransmittance;
 
                     t += stepSize;
@@ -153,8 +202,6 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float3 rd = normalize(i.rayWS);
 
                 float3 col = RayMarchFluid(ro, rd);
-
-                // debug clamp
                 col = saturate(col);
                 return fixed4(col, 1.0);
             }

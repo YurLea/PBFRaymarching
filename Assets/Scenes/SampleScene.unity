@@ -209,13 +209,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 705507993}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.40821788, y: -0.23456968, z: 0.10938163, w: 0.8754261}
+  m_LocalRotation: {x: 0.95215905, y: -0.043541487, z: 0.2551302, w: 0.16249907}
   m_LocalPosition: {x: 0, y: 3, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 50, y: -30, z: 0}
+  m_LocalEulerAnglesHint: {x: 160.63, y: -30, z: 0}
 --- !u!1 &711951253
 GameObject:
   m_ObjectHideFlags: 0
@@ -370,7 +370,7 @@ Transform:
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
   m_LocalRotation: {x: 0.24729098, y: 0.28506836, z: -0.07638385, w: 0.92290235}
-  m_LocalPosition: {x: -2.91, y: 11.1, z: -6.32}
+  m_LocalPosition: {x: -5.3, y: 13.6, z: -9.9}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -410,10 +410,12 @@ MonoBehaviour:
   densityMap: {fileID: 1703057817}
   _shader: {fileID: 4800000, guid: 6ed9101590b62e845acf0e09bef7b1fe, type: 3}
   maxDistance: 50
-  densityOffset: 25
-  densityMultiplier: 0.004
-  stepSize: 0.075
-  scatteringCoefficients: {x: 1, y: 1.42, z: 2.35}
+  densityOffset: 30
+  densityMultiplier: 0.008
+  stepSize: 0.095
+  scatteringCoefficients: {x: 3.82, y: 2.84, z: 1.09}
+  directionalLight: {fileID: 705507994}
+  lightMarchStepSize: 0.4
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0
@@ -445,7 +447,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   sim: {fileID: 711951254}
   densityCS: {fileID: 7200000, guid: d1e905fe787e4df4fb0f7d91606034e1, type: 3}
-  volumeResolution: {x: 100, y: 150, z: 110}
+  volumeResolution: {x: 80, y: 130, z: 90}
   densityStorageScale: 1
   buildEveryFrame: 1
   buildInLateUpdate: 1

@@ -16,8 +16,12 @@ public class PBFRaymarchCamera : MonoBehaviour
     public float densityOffset = 25.0f;
     public float densityMultiplier = 0.0045f;
     public float stepSize = 0.03f;
+    [Header("Color")]
     // добавьте в параметры
     public Vector3 scatteringCoefficients = new Vector3(1f, 1f, 1f);
+    [Header("Lighting")]
+    public Light directionalLight;                 // если null, возьмём RenderSettings.sun
+    public float lightMarchStepSize = 0.15f;       // шаг марча по лучу к солнцу
 
     private Camera _cam;
     private Material _raymarchMat;
@@ -87,6 +91,29 @@ public class PBFRaymarchCamera : MonoBehaviour
         
         mat.SetVector("_ScatteringCoefficients",
             new Vector4(scatteringCoefficients.x, scatteringCoefficients.y, scatteringCoefficients.z, 0));
+        
+        Light sun = directionalLight != null ? directionalLight : RenderSettings.sun;
+
+        // dirToSun: направление ОТ точки в сцене К солнцу.
+        // Для Directional Light в Unity лучи света идут вдоль -forward,
+        // значит "к солнцу" = forward.
+        Vector3 dirToSun = sun != null ? -sun.transform.forward : Vector3.up;
+        dirToSun.Normalize();
+
+        Vector3 lightColor = Vector3.one;
+        if (sun != null)
+        {
+            Color c = sun.color * sun.intensity;
+            lightColor = new Vector3(c.r, c.g, c.b);
+        }
+
+        mat.SetVector("_DirToSun", new Vector4(dirToSun.x, dirToSun.y, dirToSun.z, 0));
+        mat.SetFloat("_LightMarchStepSize", lightMarchStepSize);
+
+        mat.SetVector("_ScatteringCoefficients",
+            new Vector4(scatteringCoefficients.x, scatteringCoefficients.y, scatteringCoefficients.z, 0));
+
+        mat.SetVector("_LightColor", new Vector4(lightColor.x, lightColor.y, lightColor.z, 0));
 
         // Fullscreen quad как в вашей заготовке (vertex.z несёт индекс 0..3)
         RenderTexture.active = destination;
