@@ -8,6 +8,7 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
         _DirToSun ("Dir To Sun (WS)", Vector) = (0,1,0,0)
         _LightColor ("Light Color (RGB)", Vector) = (1,1,1,0)
         _LightMarchStepSize ("Light March Step Size", Float) = 0.15
+        _NormalEps ("Normal Epsilon (World units)", Float) = 0.005
     }
 
     SubShader
@@ -40,6 +41,8 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
             float4 _DirToSun;               // xyz
             float4 _LightColor;             // xyz
             float  _LightMarchStepSize;
+
+            float _NormalEps;
 
             struct appdata
             {
@@ -142,6 +145,104 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 return accum;
             }
 
+            float DensityField(float3 pWorld)
+            {
+                // "поле" вокруг изо-поверхности: <0 снаружи, >0 внутри
+                // (это не SDF, но для нормали градиента подходит)
+                return SampleDensityWorld(pWorld) - _DensityOffset;
+            }
+
+            float3 CalculateNormalWorld(float3 pWorld, float3 viewDir)
+            {
+                float eps = max(_NormalEps, 1e-4);
+
+                // чтобы при вычислении градиента не вылезать за bounds (иначе градиент ломается на краях/тонких местах)
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+                pWorld = clamp(pWorld, bmin + eps, bmax - eps);
+
+                float3 ex = float3(eps, 0,   0);
+                float3 ey = float3(0,   eps, 0);
+                float3 ez = float3(0,   0,   eps);
+
+                float dx = DensityField(pWorld + ex) - DensityField(pWorld - ex);
+                float dy = DensityField(pWorld + ey) - DensityField(pWorld - ey);
+                float dz = DensityField(pWorld + ez) - DensityField(pWorld - ez);
+
+                float3 grad = float3(dx, dy, dz);
+
+                // устойчивое нормирование (без NaN)
+                float len2 = dot(grad, grad);
+                float3 n = (len2 > 1e-12) ? (-grad * rsqrt(len2)) : float3(0, 1, 0);
+
+                // faceforward: чтобы нормаль всегда “смотрела” на камеру (важно для Fresnel/reflect/refract и убирает флипы)
+                if (dot(n, viewDir) > 0) n = -n;
+
+                return n;
+            }
+
+            bool RaymarchSurfaceHit(float3 roWorld, float3 rdWorld, out float3 hitPos)
+            {
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+
+                float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
+                if (hit.y <= 0.0) { hitPos = 0; return false; }
+
+                float stepSize = max(_StepSize, 1e-4);
+
+                float dstToBox = hit.x;
+                float dstThrough = min(hit.y, _MaxDistance);
+
+                const float TinyNudge = 1e-3;
+                float t = TinyNudge;
+                float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
+
+                // значение поля в предыдущей точке
+                float3 p0 = roWorld + rdWorld * (dstToBox + t);
+                float f0 = DensityField(p0);
+
+                [loop]
+                for (int i = 0; i < 4096; i++)
+                {
+                    t += stepSize;
+                    if (t >= tEnd) break;
+
+                    float3 p1 = roWorld + rdWorld * (dstToBox + t);
+                    float f1 = DensityField(p1);
+
+                    if (f0 <= 0.0 && f1 > 0.0)
+                    {
+                        // сначала грубо (линейно)
+                        float a = saturate(f0 / (f0 - f1));
+                        float3 pa = lerp(p0, p1, a);
+
+                        // потом 4-6 итераций бинарного поиска для стабильности
+                        float3 lo = p0; float flo = f0;
+                        float3 hi = p1; float fhi = f1;
+
+                        [unroll]
+                        for (int j = 0; j < 5; j++)
+                        {
+                            float3 mid = 0.5 * (lo + hi);
+                            float fmid = DensityField(mid);
+
+                            if (fmid > 0.0) { hi = mid; fhi = fmid; }
+                            else           { lo = mid; flo = fmid; }
+                        }
+
+                        hitPos = hi; // точка уже на “внутренней” стороне порога
+                        return true;
+                    }
+
+                    p0 = p1;
+                    f0 = f1;
+                }
+
+                hitPos = 0;
+                return false;
+            }
+
             float3 RayMarchFluid(float3 roWorld, float3 rdWorld)
             {
                 float3 bmin = _BoundsMin.xyz;
@@ -201,10 +302,24 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float3 ro = _WorldSpaceCameraPos;
                 float3 rd = normalize(i.rayWS);
 
-                float3 col = RayMarchFluid(ro, rd);
-                col = saturate(col);
-                return fixed4(col, 1.0);
+                float3 hitPos;
+                if (RaymarchSurfaceHit(ro, rd, hitPos))
+                {
+                    float3 n = CalculateNormalWorld(hitPos, rd);
+                    return float4(saturate(n * 0.5 + 0.5), 1);
+                }
+
+                return float4(0,0,0,1);
             }
+            //fixed4 frag(v2f i) : SV_Target
+            //{
+            //    float3 ro = _WorldSpaceCameraPos;
+            //    float3 rd = normalize(i.rayWS);
+
+            //    float3 col = RayMarchFluid(ro, rd);
+            //    col = saturate(col);
+            //    return fixed4(col, 1.0);
+            //}
             ENDCG
         }
     }

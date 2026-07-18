@@ -4,6 +4,7 @@
 
 #define THREADS 256
 static const float PI = 3.1415926535;
+static const int PAD = 2; // 1 или 2 обычно хватает
 
 struct ParticleData
 {
@@ -76,8 +77,8 @@ void SplatParticlesToDensity(uint3 id : SV_DispatchThreadID)
     int3 minV = (int3)floor((p - h.xxx - boundsMin.xyz) / voxelSize.xyz);
     int3 maxV = (int3)ceil ((p + h.xxx - boundsMin.xyz) / voxelSize.xyz);
 
-    minV = max(minV, int3(0,0,0));
-    maxV = min(maxV, res - int3(1,1,1));
+    minV = max(minV, int3(PAD, PAD, PAD));
+    maxV = min(maxV, res - int3(1 + PAD, 1 + PAD, 1 + PAD)); // т.к. maxV inclusive
 
     for (int z = minV.z; z <= maxV.z; z++)
     {
@@ -121,6 +122,13 @@ void FinalizeDensityVolume(uint3 id : SV_DispatchThreadID)
     float wsum = 0.0;
 
     int3 res = int3(volumeResolutionX, volumeResolutionY, volumeResolutionZ);
+
+    if (x < PAD || y < PAD || z < PAD ||
+    x >= res.x - PAD || y >= res.y - PAD || z >= res.z - PAD)
+    {
+        DensityMap[int3(x,y,z)] = float4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
 
     // 3x3x3 smoothing kernel, weights: (dx==0?2:1)*(dy==0?2:1)*(dz==0?2:1)
     for (int dz = -1; dz <= 1; dz++)
