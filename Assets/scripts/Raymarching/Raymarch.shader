@@ -379,8 +379,37 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return lerp(colGround, skyGradient, groundToSkyT) + sun * (groundToSkyT >= 1.0);
             }
 
-                        // Возвращает цвет прямоугольной плоскости (шахматка) при пересечении лучом.
-            // Если пересечения нет — возвращает float4(0,0,0,0).
+            // --- helpers ---
+            float Hash12(float2 p)
+            {
+                // стабильный хэш 0..1
+                return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
+            }
+
+            // Hue rotation через YIQ (angle в радианах)
+            float3 HueShiftYIQ(float3 rgb, float angle)
+            {
+                const float3 toY  = float3(0.299, 0.587, 0.114);
+                const float3 toI  = float3(0.596, -0.274, -0.322);
+                const float3 toQ  = float3(0.211, -0.523, 0.312);
+
+                float  Y = dot(rgb, toY);
+                float  I = dot(rgb, toI);
+                float  Q = dot(rgb, toQ);
+
+                float ca = cos(angle);
+                float sa = sin(angle);
+
+                float I2 = I * ca - Q * sa;
+                float Q2 = I * sa + Q * ca;
+
+                float3 outRgb;
+                outRgb.r = Y + 0.956 * I2 + 0.621 * Q2;
+                outRgb.g = Y - 0.272 * I2 - 0.647 * Q2;
+                outRgb.b = Y - 1.107 * I2 + 1.705 * Q2;
+                return outRgb;
+            }
+
             float4 RayRectCheckerPlane(float3 posWS, float3 dirWS)
             {
                 // ----- hardcode: параметры плоскости -----
@@ -393,15 +422,14 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 const float a = 30.0;
                 const float b = 20.0;
 
-                // Размеры тайлов шахматки
                 const float tileA = 0.5;
                 const float tileB = 0.5;
 
-                // 4 базовых цвета (пастельные), как на рефе
-                const float3 colBL = float3(0.55, 0.86, 0.78); // bottom-left  (мятный)
-                const float3 colBR = float3(0.90, 0.80, 0.54); // bottom-right (песочный)
-                const float3 colTL = float3(0.93, 0.62, 0.62); // top-left     (розовый)
-                const float3 colTR = float3(0.62, 0.55, 0.92); // top-right    (фиолетовый)
+                // 4 базовых цвета
+                const float3 colBL = float3(0.55, 0.86, 0.78);
+                const float3 colBR = float3(0.90, 0.80, 0.54);
+                const float3 colTL = float3(0.93, 0.62, 0.62);
+                const float3 colTR = float3(0.62, 0.55, 0.92);
 
                 // ----- пересечение луча с плоскостью -----
                 float3 rd = normalize(dirWS);
@@ -421,12 +449,10 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 if (abs(u) > a * 0.5 || abs(v) > b * 0.5)
                     return float4(0, 0, 0, 0);
 
-                // сдвиг в [0..a], [0..b]
                 float u01 = u + a * 0.5;
                 float v01 = v + b * 0.5;
 
-                // ----- 4 квадранта по центру прямоугольника -----
-                // qx: 0 = левый, 1 = правый; qy: 0 = низ, 1 = верх
+                // ----- 4 квадранта -----
                 float qx = step(a * 0.5, u01);
                 float qy = step(b * 0.5, v01);
 
@@ -434,27 +460,44 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 float3 top    = lerp(colTL, colTR, qx);
                 float3 baseCol = lerp(bottom, top, qy);
 
-                // ----- шахматка (чуть светлее/темнее от baseCol) -----
+                // ----- индексы клетки -----
                 float cellU = floor(u01 / tileA);
                 float cellV = floor(v01 / tileB);
-                float check = fmod(cellU + cellV, 2.0); // 0 или 1
 
-                float3 cDark  = baseCol * 0.68;
-                float3 cLight = saturate(baseCol * 1.10 + 0.03);
+                // ----- рандом на каждый тайл: hue + brightness -----
+                float2 cellId = float2(cellU, cellV);
+
+                float r1 = Hash12(cellId + 13.37);
+                float r2 = Hash12(cellId + 91.11);
+
+                // яркость: примерно -12%..+6%
+                float brightness = lerp(0.66, 1.06, r1);
+
+                // hue: примерно -18°..+18° (в радианах)
+                float hueAngle = (r2 - 0.5) * 0.62; // 0.62 rad ~ 35.5°
+
+                float3 variedBase = HueShiftYIQ(baseCol, hueAngle);
+                variedBase *= brightness;
+                variedBase = saturate(variedBase);
+
+                // ----- шахматка (светлее/темнее) -----
+                float check = fmod(cellU + cellV, 2.0); // 0/1
+
+                float3 cDark  = variedBase * 0.68;
+                float3 cLight = saturate(variedBase * 1.10 + 0.03);
                 float3 c = lerp(cLight, cDark, check);
 
-                // ----- тонкие линии сетки тайлов -----
-                // lineMask = 1 на границе клетки, 0 в центре
+                // ----- тонкие линии сетки -----
                 float fu = frac(u01 / tileA);
                 float fv = frac(v01 / tileB);
                 float edge = min(min(fu, 1.0 - fu), min(fv, 1.0 - fv));
 
-                const float gridWidth = 0.045; // в "долях клетки"
+                const float gridWidth = 0.045; // в долях клетки
                 float lineMask = 1.0 - smoothstep(0.0, gridWidth, edge);
                 c = lerp(c, saturate(c + 0.10), lineMask * 0.65);
 
-                // ----- разделители между цветными квадрантами (u=0 и v=0) -----
-                const float seamW = 0.035; // в мировых единицах
+                // ----- разделители между квадрантами -----
+                const float seamW = 0.035;
                 float seamU = 1.0 - smoothstep(0.0, seamW, abs(u));
                 float seamV = 1.0 - smoothstep(0.0, seamW, abs(v));
                 float seam = max(seamU, seamV);
@@ -465,7 +508,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 float edgeV = (b * 0.5 - abs(v));
                 float edgeMin = min(edgeU, edgeV);
                 float edgeFade = smoothstep(0.0, 0.35, edgeMin);
-                c *= lerp(0.88, 1.0, edgeFade);
+                c *= lerp(0.75, 1.0, edgeFade);
 
                 return float4(saturate(c), 1.0);
             }

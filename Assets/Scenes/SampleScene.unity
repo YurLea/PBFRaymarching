@@ -412,12 +412,12 @@ MonoBehaviour:
   maxDistance: 50
   densityOffset: 40
   densityMultiplier: 0.003
-  stepSize: 0.05
-  scatteringCoefficients: {x: 7.83, y: 4.84, z: 0.76}
+  stepSize: 0.02
+  scatteringCoefficients: {x: 5.66, y: 3.18, z: 0.51}
   normalEps: 0.04
-  indexOfRefraction: 1.333
+  indexOfRefraction: 1.15
   numBounces: 1
-  bounceDensityStepSize: 0.05
+  bounceDensityStepSize: 0.02
   sun: {fileID: 705507994}
 --- !u!1 &1703057816
 GameObject:
