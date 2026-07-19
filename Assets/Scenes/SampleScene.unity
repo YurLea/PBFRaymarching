@@ -295,6 +295,7 @@ GameObject:
   - component: {fileID: 963194226}
   - component: {fileID: 963194229}
   - component: {fileID: 963194230}
+  - component: {fileID: 963194231}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -401,7 +402,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 963194225}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: c0d59f6b478a6a34d878968da3897aa9, type: 3}
   m_Name: 
@@ -410,7 +411,7 @@ MonoBehaviour:
   densityMap: {fileID: 1703057817}
   _shader: {fileID: 4800000, guid: 6ed9101590b62e845acf0e09bef7b1fe, type: 3}
   maxDistance: 80
-  densityOffset: 35
+  densityOffset: 39
   densityMultiplier: 0.003
   stepSize: 0.02
   scatteringCoefficients: {x: 5.66, y: 3.18, z: 0.51}
@@ -419,6 +420,24 @@ MonoBehaviour:
   numBounces: 1
   bounceDensityStepSize: 0.02
   sun: {fileID: 705507994}
+--- !u!114 &963194231
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 963194225}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c779db3640a8a6c4aa8c4fa60ae0c1f0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  sim: {fileID: 711951254}
+  densityMap: {fileID: 1703057817}
+  _shader: {fileID: 4800000, guid: faf8398e842092e40bbc9d9f1ba7804d, type: 3}
+  maxDistance: 50
+  sun: {fileID: 705507994}
+  sunIntensity: 1
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0
@@ -450,7 +469,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   sim: {fileID: 711951254}
   densityCS: {fileID: 7200000, guid: d1e905fe787e4df4fb0f7d91606034e1, type: 3}
-  volumeResolution: {x: 63, y: 96, z: 72}
+  volumeResolution: {x: 80, y: 112, z: 70}
   densityStorageScale: 1
   buildEveryFrame: 1
   buildInLateUpdate: 1
