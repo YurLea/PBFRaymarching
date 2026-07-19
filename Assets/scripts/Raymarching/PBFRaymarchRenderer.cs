@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Experimental.GlobalIllumination;
 
 [RequireComponent(typeof(Camera))]
 [ExecuteInEditMode]
@@ -27,6 +28,10 @@ public class PBFRaymarchCamera : MonoBehaviour
     [Header("Boundary tracing (like Fluid/Raymarching)")]
     [Range(1, 16)] public int numBounces = 4;
     public float bounceDensityStepSize = 0.15f;
+
+    [Header("Light")]
+    public Light sun; // перетащи сюда Directional Light из сцены
+
 
     private Camera _cam;
     private Material _raymarchMat;
@@ -102,7 +107,12 @@ public class PBFRaymarchCamera : MonoBehaviour
         Vector3 bsize = sim.boxMax - sim.boxMin;
         mat.SetVector("_BoundsMin", new Vector4(bmin.x, bmin.y, bmin.z, 0));
         mat.SetVector("_BoundsSize", new Vector4(bsize.x, bsize.y, bsize.z, 0));
-
+        
+        
+        Vector3 dirToSunWS = -sun.transform.forward;          // world-space
+        mat.SetVector("dirToSun", new Vector4(dirToSunWS.x, dirToSunWS.y, dirToSunWS.z, 0));
+        
+        
         // Volume texture
         mat.SetTexture("_DensityMap", densityMap.DensityTexture);
 

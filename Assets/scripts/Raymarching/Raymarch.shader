@@ -38,6 +38,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
             float4 _BoundsMin;   // xyz
             float4 _BoundsSize;  // xyz
+            float3 dirToSun;
 
             float _MaxDistance;
             float _DensityOffset;
@@ -364,11 +365,26 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return uv;
             }
 
+            float3 SampleSky(float3 dir)
+            {
+                const float3 colGround = float3(0.35, 0.3, 0.35) * 0.53;
+                const float3 colSkyHorizon = float3(1, 1, 1);
+                const float3 colSkyZenith = float3(0.08, 0.37, 0.73);
+
+                float sun = pow(max(0.0, dot(dir, dirToSun)), 500.0) * 1.0;
+                float skyGradientT = pow(smoothstep(0.0, 0.4, dir.y), 0.35);
+                float groundToSkyT = smoothstep(-0.01, 0.0, dir.y);
+                float3 skyGradient = lerp(colSkyHorizon, colSkyZenith, skyGradientT);
+
+                return lerp(colGround, skyGradient, groundToSkyT) + sun * (groundToSkyT >= 1.0);
+            }
+
             float3 LightNoEnv(float3 dirWS)
             {
-                float2 uv = UVFromWorldDir(dirWS);
-                uv = clamp(uv, 0.001, 0.999);
-                return tex2D(_MainTex, uv).rgb;
+                //float2 uv = UVFromWorldDir(dirWS);
+                //uv = clamp(uv, 0.001, 0.999);
+                //return tex2D(_MainTex, uv).rgb;
+                return SampleSky(dirWS);
             }
 
             float3 TraceLikeFluid(float3 ro, float3 rd)

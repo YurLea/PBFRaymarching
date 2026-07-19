@@ -369,13 +369,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.24729098, y: 0.28506836, z: -0.07638385, w: 0.92290235}
-  m_LocalPosition: {x: -3.8, y: 12.1, z: -7.7}
+  m_LocalRotation: {x: 0.10567535, y: 0.29331383, z: -0.03264126, w: 0.94959694}
+  m_LocalPosition: {x: -4.6, y: 8, z: -8.8}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 30, y: 34.33, z: 0}
+  m_LocalEulerAnglesHint: {x: 12.7, y: 34.33, z: 0}
 --- !u!114 &963194229
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -412,12 +412,13 @@ MonoBehaviour:
   maxDistance: 50
   densityOffset: 35
   densityMultiplier: 0.001
-  stepSize: 0.075
+  stepSize: 0.025
   scatteringCoefficients: {x: 7.83, y: 4.84, z: 0.76}
   normalEps: 0.009
   indexOfRefraction: 1.333
   numBounces: 2
-  bounceDensityStepSize: 0.075
+  bounceDensityStepSize: 0.025
+  sun: {fileID: 705507994}
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0
