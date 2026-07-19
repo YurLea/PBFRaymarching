@@ -4,7 +4,7 @@
 
 #define THREADS 256
 static const float PI = 3.1415926535;
-static const int PAD = 2; // 1 или 2 обычно хватает
+static const int PAD = 1; // 1 или 2 обычно хватает
 
 struct ParticleData
 {

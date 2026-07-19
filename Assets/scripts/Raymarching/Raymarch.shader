@@ -14,7 +14,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_Debug"
         _BounceDensityStepSize ("Bounce Density Step Size", Float) = 0.15
         
         _Radius ("Sphere Radius", Float) = 0.95
-        _Position ("Sphere Pos", Vector) = (3.0, 2.2, 3.0)
+        _Position ("Sphere Pos", Vector) = (-3.0, 2.2, 3.0)
     }
 
     SubShader

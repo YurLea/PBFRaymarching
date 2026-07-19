@@ -3,7 +3,7 @@ using UnityEngine.Experimental.GlobalIllumination;
 
 [RequireComponent(typeof(Camera))]
 [ExecuteInEditMode]
-public class PBFRaymarchCamera : MonoBehaviour
+public class PBFRaymarchCameraDebug : MonoBehaviour
 {
     [Header("Links")]
     public PBFSim sim;
