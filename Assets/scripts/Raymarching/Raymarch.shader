@@ -84,15 +84,6 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return o;
             }
 
-            float2 FixUVForPlatform(float2 uv)
-            {
-                #if UNITY_UV_STARTS_AT_TOP
-                if (_MainTex_TexelSize.y < 0)
-                    uv.y = 1.0 - uv.y;
-                #endif
-                return uv;
-            }
-
             float2 RayBox(float3 bmin, float3 bmax, float3 ro, float3 rd)
             {
                 float3 inv = 1.0 / rd;
@@ -370,7 +361,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
                 float4 clip = mul(UNITY_MATRIX_P, float4(pVS, 1));
                 float2 uv = clip.xy / max(1e-5, clip.w) * 0.5 + 0.5;
-                return FixUVForPlatform(uv);
+                return uv;
             }
 
             float3 LightNoEnv(float3 dirWS)
@@ -380,7 +371,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return tex2D(_MainTex, uv).rgb;
             }
 
-            float3 TraceLikeFluid(float2 pixelUV, float3 ro, float3 rd)
+            float3 TraceLikeFluid(float3 ro, float3 rd)
             {
                 bool travellingThroughFluid = IsInsideFluid(ro);
 
@@ -447,12 +438,10 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
             fixed4 frag(v2f i) : SV_Target
             {
-                float2 uv = FixUVForPlatform(i.uv);
-
                 float3 ro = _WorldSpaceCameraPos;
                 float3 rd = normalize(i.rayWS);
 
-                float3 col = TraceLikeFluid(uv, ro, rd);
+                float3 col = TraceLikeFluid(ro, rd);
                 return fixed4(saturate(col), 1.0);
             }
 

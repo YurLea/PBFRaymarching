@@ -209,13 +209,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 705507993}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.95215905, y: -0.043541487, z: 0.2551302, w: 0.16249907}
+  m_LocalRotation: {x: 0.8124653, y: -0.13997951, z: 0.21769938, w: 0.52241075}
   m_LocalPosition: {x: 0, y: 3, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 160.63, y: -30, z: 0}
+  m_LocalEulerAnglesHint: {x: 114.518005, y: -30, z: 0}
 --- !u!1 &711951253
 GameObject:
   m_ObjectHideFlags: 0
@@ -320,7 +320,7 @@ Camera:
   m_Enabled: 1
   serializedVersion: 2
   m_ClearFlags: 1
-  m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
+  m_BackGroundColor: {r: 0.759434, g: 0.95056456, b: 1, a: 0}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
   m_FOVAxisMode: 0
@@ -370,7 +370,7 @@ Transform:
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
   m_LocalRotation: {x: 0.24729098, y: 0.28506836, z: -0.07638385, w: 0.92290235}
-  m_LocalPosition: {x: -5.3, y: 13.6, z: -9.9}
+  m_LocalPosition: {x: -3.8, y: 12.1, z: -7.7}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -410,12 +410,14 @@ MonoBehaviour:
   densityMap: {fileID: 1703057817}
   _shader: {fileID: 4800000, guid: 6ed9101590b62e845acf0e09bef7b1fe, type: 3}
   maxDistance: 50
-  densityOffset: 30
-  densityMultiplier: 0.008
-  stepSize: 0.095
-  scatteringCoefficients: {x: 3.7, y: 2.43, z: 1.08}
-  directionalLight: {fileID: 705507994}
-  lightMarchStepSize: 0.35
+  densityOffset: 35
+  densityMultiplier: 0.001
+  stepSize: 0.075
+  scatteringCoefficients: {x: 7.83, y: 4.84, z: 0.76}
+  normalEps: 0.009
+  indexOfRefraction: 1.333
+  numBounces: 2
+  bounceDensityStepSize: 0.075
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0
@@ -447,7 +449,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   sim: {fileID: 711951254}
   densityCS: {fileID: 7200000, guid: d1e905fe787e4df4fb0f7d91606034e1, type: 3}
-  volumeResolution: {x: 80, y: 130, z: 90}
+  volumeResolution: {x: 63, y: 96, z: 72}
   densityStorageScale: 1
   buildEveryFrame: 1
   buildInLateUpdate: 1
