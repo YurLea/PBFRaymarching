@@ -1,4 +1,4 @@
-Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
+Shader "PeerPlay/PBF/RaymarchLikeFluid_Debug"
 {
     Properties
     {
@@ -6,13 +6,15 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
         _DensityMap ("Density Map (3D)", 3D) = "" {}
 
         _ScatteringCoefficients ("Extinction Coefficients (RGB)", Vector) = (1,1,1,0)
-
         _NormalEps ("Normal Epsilon (World units)", Float) = 0.005
 
         _IOR ("Index Of Refraction", Float) = 1.333
 
         _NumBounces ("Num Bounces (boundary events)", Range(1,8)) = 1
         _BounceDensityStepSize ("Bounce Density Step Size", Float) = 0.15
+        
+        _Radius ("Sphere Radius", Float) = 0.95
+        _Position ("Sphere Pos", Vector) = (3.0, 2.2, 3.0)
     }
 
     SubShader
@@ -54,6 +56,9 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
             static const float TinyNudge = 1e-3;
             static const float iorAir = 1.0;
+
+            float _Radius;
+            float3 _Position;
 
             struct appdata
             {
@@ -112,11 +117,9 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
                 float3 uvw = (pWorld - bmin) / bsize;
 
-                // вне bounds считаем нулевую плотность
                 if (any(uvw < 0.0) || any(uvw > 1.0))
                     return 0.0;
 
-                // можно слегка “убить” края, как во 2-м шейдере, чтобы не ловить артефакты
                 const float eps = 1e-4;
                 if (any(uvw <= eps) || any(uvw >= 1.0 - eps))
                     return 0.0;
@@ -167,10 +170,256 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return n;
             }
 
-            // optical depth along ray inside bounds (как во 2-м шейдере)
+            // ----------------- helpers (шахматка) -----------------
+
+            float Hash12(float2 p)
+            {
+                return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
+            }
+
+            float3 HueShiftYIQ(float3 rgb, float angle)
+            {
+                const float3 toY  = float3(0.299, 0.587, 0.114);
+                const float3 toI  = float3(0.596, -0.274, -0.322);
+                const float3 toQ  = float3(0.211, -0.523, 0.312);
+
+                float  Y = dot(rgb, toY);
+                float  I = dot(rgb, toI);
+                float  Q = dot(rgb, toQ);
+
+                float ca = cos(angle);
+                float sa = sin(angle);
+
+                float I2 = I * ca - Q * sa;
+                float Q2 = I * sa + Q * ca;
+
+                float3 outRgb;
+                outRgb.r = Y + 0.956 * I2 + 0.621 * Q2;
+                outRgb.g = Y - 0.272 * I2 - 0.647 * Q2;
+                outRgb.b = Y - 1.107 * I2 + 1.705 * Q2;
+                return outRgb;
+            }
+
+            // ----------------- Scene solids: Sphere + RectPlane -----------------
+
+            // distance (SDF) до сферы (не обязателен, но оставляю по просьбе)
+            float SphereDistance(float3 pWS, float3 centerWS, float R)
+            {
+                return length(pWS - centerWS) - R;
+            }
+
+            bool RaySphereHit(float3 ro, float3 rd, float3 center, float R, out float tHit)
+            {
+                float3 oc = ro - center;
+                float b = dot(oc, rd);
+                float c = dot(oc, oc) - R * R;
+                float h = b * b - c;
+                if (h < 0.0) { tHit = 0.0; return false; }
+
+                float s = sqrt(h);
+                float t = -b - s;
+                if (t <= 0.0) t = -b + s;
+
+                tHit = t;
+                return t > 0.0;
+            }
+
+            // Sphere: hit + shaded color + t
+            bool RayLitSphereHit(float3 ro, float3 rd, out float tHit, out float3 col)
+            {
+                // ---- hardcode: параметры сферы ----
+                const float3 sphereCenterWS = _Position;
+                const float  R = _Radius;
+                const float3 sphereColor = float3(1.0, 0.25, 0.25);
+
+                col = 0;
+                if (!RaySphereHit(ro, rd, sphereCenterWS, R, tHit)) return false;
+
+                float3 hitWS = ro + rd * tHit;
+
+                float3 N = normalize(hitWS - sphereCenterWS);
+                if (dot(N, rd) > 0.0) N = -N;
+
+                float3 L = normalize(dirToSun);
+                float ndotl = saturate(dot(N, L));
+
+                const float ambient = 0.18;
+                col = sphereColor * (ambient + (1.0 - ambient) * ndotl);
+
+                float3 V = normalize(-rd);
+                float3 H = normalize(L + V);
+                float spec = pow(saturate(dot(N, H)), 64.0) * 0.25;
+                col += spec;
+
+                col = saturate(col);
+                return true;
+            }
+
+            // Plane rect: только t (для клипа трассировки)
+            bool RayRectPlaneTHit(float3 posWS, float3 dirWS, out float tHit)
+            {
+                // ----- hardcode: параметры плоскости -----
+                const float3 planeCenterWS = float3(10.0, -0.05, 5.0);
+                const float3 n = float3(0.0, 1.0, 0.0);
+
+                const float3 uAxis = float3(1.0, 0.0, 0.0);
+                const float3 vAxis = float3(0.0, 0.0, 1.0);
+
+                const float a = 30.0;
+                const float b = 20.0;
+
+                float3 rd = normalize(dirWS);
+                float denom = dot(n, rd);
+                if (abs(denom) < 1e-6) { tHit = 0; return false; }
+
+                float t = dot(n, (planeCenterWS - posWS)) / denom;
+                if (t <= 0.0) { tHit = 0; return false; }
+
+                float3 hitWS = posWS + rd * t;
+
+                float3 d = hitWS - planeCenterWS;
+                float u = dot(d, uAxis);
+                float v = dot(d, vAxis);
+
+                if (abs(u) > a * 0.5 || abs(v) > b * 0.5) { tHit = 0; return false; }
+
+                tHit = t;
+                return true;
+            }
+
+            // Plane rect: color + t
+            bool RayRectCheckerPlaneHit(float3 posWS, float3 dirWS, out float tHit, out float3 col)
+            {
+                // ----- hardcode: параметры плоскости -----
+                const float3 planeCenterWS = float3(10.0, -0.05, 5.0);
+                const float3 n = float3(0.0, 1.0, 0.0);
+
+                const float3 uAxis = float3(1.0, 0.0, 0.0);
+                const float3 vAxis = float3(0.0, 0.0, 1.0);
+
+                const float a = 30.0;
+                const float b = 20.0;
+
+                const float tileA = 0.5;
+                const float tileB = 0.5;
+
+                // 4 базовых цвета
+                const float3 colBL = float3(0.55, 0.86, 0.78);
+                const float3 colBR = float3(0.90, 0.80, 0.54);
+                const float3 colTL = float3(0.93, 0.62, 0.62);
+                const float3 colTR = float3(0.62, 0.55, 0.92);
+
+                col = 0;
+                tHit = 0;
+
+                float3 rd = normalize(dirWS);
+                float denom = dot(n, rd);
+                if (abs(denom) < 1e-6) return false;
+
+                float t = dot(n, (planeCenterWS - posWS)) / denom;
+                if (t <= 0.0) return false;
+
+                float3 hitWS = posWS + rd * t;
+
+                float3 d = hitWS - planeCenterWS;
+                float u = dot(d, uAxis);
+                float v = dot(d, vAxis);
+
+                if (abs(u) > a * 0.5 || abs(v) > b * 0.5)
+                    return false;
+
+                float u01 = u + a * 0.5;
+                float v01 = v + b * 0.5;
+
+                // квадранты
+                float qx = step(a * 0.5, u01);
+                float qy = step(b * 0.5, v01);
+
+                float3 bottom = lerp(colBL, colBR, qx);
+                float3 top    = lerp(colTL, colTR, qx);
+                float3 baseCol = lerp(bottom, top, qy);
+
+                float cellU = floor(u01 / tileA);
+                float cellV = floor(v01 / tileB);
+
+                // рандом на тайл
+                float2 cellId = float2(cellU, cellV);
+                float r1 = Hash12(cellId + 13.37);
+                float r2 = Hash12(cellId + 91.11);
+
+                float brightness = lerp(0.66, 1.06, r1);
+                float hueAngle = (r2 - 0.5) * 0.62;
+
+                float3 variedBase = HueShiftYIQ(baseCol, hueAngle);
+                variedBase *= brightness;
+                variedBase = saturate(variedBase);
+
+                float check = fmod(cellU + cellV, 2.0);
+
+                float3 cDark  = variedBase * 0.68;
+                float3 cLight = saturate(variedBase * 1.10 + 0.03);
+                float3 c = lerp(cLight, cDark, check);
+
+                // линии сетки
+                float fu = frac(u01 / tileA);
+                float fv = frac(v01 / tileB);
+                float edge = min(min(fu, 1.0 - fu), min(fv, 1.0 - fv));
+
+                const float gridWidth = 0.045;
+                float lineMask = 1.0 - smoothstep(0.0, gridWidth, edge);
+                c = lerp(c, saturate(c + 0.10), lineMask * 0.65);
+
+                // разделители квадрантов
+                const float seamW = 0.035;
+                float seamU = 1.0 - smoothstep(0.0, seamW, abs(u));
+                float seamV = 1.0 - smoothstep(0.0, seamW, abs(v));
+                float seam = max(seamU, seamV);
+                c = lerp(c, float3(0.95, 0.95, 0.95), seam * 0.75);
+
+                // затемнение к краям
+                float edgeU = (a * 0.5 - abs(u));
+                float edgeV = (b * 0.5 - abs(v));
+                float edgeMin = min(edgeU, edgeV);
+                float edgeFade = smoothstep(0.0, 0.35, edgeMin);
+                c *= lerp(0.75, 1.0, edgeFade);
+
+                tHit = t;
+                col = saturate(c);
+                return true;
+            }
+
+            // Возвращает maxDist, ограниченный ближайшим solid (sphere/plane), если он ближе.
+            float ClampMaxDistToSolids(float3 ro, float3 rd, float maxDist)
+            {
+                float tMin = maxDist;
+
+                // sphere (distance only)
+                {
+                    const float3 sphereCenterWS = _Position;
+                    const float  R = _Radius;
+                    float tS;
+                    if (RaySphereHit(ro, rd, sphereCenterWS, R, tS))
+                        tMin = min(tMin, max(0.0, tS - TinyNudge));
+                }
+
+                // rect plane (distance only)
+                {
+                    float tP;
+                    if (RayRectPlaneTHit(ro, rd, tP))
+                        tMin = min(tMin, max(0.0, tP - TinyNudge));
+                }
+
+                return tMin;
+            }
+
+            // ----------------- optical depth along ray inside bounds -----------------
+
             float CalculateDensityAlongRay(float3 roWorld, float3 rdWorld, float stepSize)
             {
                 if (dot(rdWorld, rdWorld) < 0.9) return 0.0;
+
+                // NEW: ограничиваем луч ближайшим solid, чтобы volume не считался "за" сферой/плоскостью
+                float maxRayDist = ClampMaxDistToSolids(roWorld, rdWorld, _MaxDistance);
 
                 float3 bmin = _BoundsMin.xyz;
                 float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
@@ -182,7 +431,11 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 float step = max(stepSize, 1e-4);
 
                 float dstToBox = hit.x;
-                float dstThrough = min(hit.y, _MaxDistance);
+
+                // FIX: max distance по лучу
+                float dstThrough = min(hit.y, maxRayDist - dstToBox);
+                if (dstThrough <= 0.0)
+                    return 0.0;
 
                 float t = TinyNudge;
                 float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
@@ -208,18 +461,18 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
             float3 Transmittance(float opticalDepth)
             {
-                float3 ext = max(_ScatteringCoefficients.xyz, 0.0); // используем как extinctionCoeff
+                float3 ext = max(_ScatteringCoefficients.xyz, 0.0);
                 return exp(-opticalDepth * ext);
             }
 
-            // -------- Fresnel / reflection / refraction (как во 2-м шейдере) --------
+            // ----------------- Fresnel / reflection / refraction -----------------
 
             float CalculateReflectance(float3 inDir, float3 normal, float iorA, float iorB)
             {
                 float refractRatio = iorA / iorB;
                 float cosAngleIn = -dot(inDir, normal);
                 float sinSqrAngleOfRefraction = refractRatio * refractRatio * (1.0 - cosAngleIn * cosAngleIn);
-                if (sinSqrAngleOfRefraction >= 1.0) return 1.0; // TIR
+                if (sinSqrAngleOfRefraction >= 1.0) return 1.0;
 
                 float cosAngleOfRefraction = sqrt(1.0 - sinSqrAngleOfRefraction);
 
@@ -242,7 +495,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 float refractRatio = iorA / iorB;
                 float cosAngleIn = -dot(inDir, normal);
                 float sinSqrAngleOfRefraction = refractRatio * refractRatio * (1.0 - cosAngleIn * cosAngleIn);
-                if (sinSqrAngleOfRefraction > 1.0) return float3(0,0,0); // TIR
+                if (sinSqrAngleOfRefraction > 1.0) return float3(0,0,0);
 
                 return refractRatio * inDir + (refractRatio * cosAngleIn - sqrt(1.0 - sinSqrAngleOfRefraction)) * normal;
             }
@@ -261,11 +514,11 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 r.reflectWeight = CalculateReflectance(inDir, normal, iorA, iorB);
                 r.refractWeight = 1.0 - r.reflectWeight;
                 r.reflectDir = normalize(ReflectDir(inDir, normal));
-                r.refractDir = normalize(RefractDir(inDir, normal, iorA, iorB)); // может стать (0,0,0) при TIR
+                r.refractDir = normalize(RefractDir(inDir, normal, iorA, iorB));
                 return r;
             }
 
-            // -------- Surface stepping (FindNextSurface как во 2-м шейдере) --------
+            // ----------------- Surface stepping -----------------
 
             struct SurfaceInfo
             {
@@ -286,11 +539,13 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 if (hit.y <= 0.0) return info;
 
                 float dstToBox = hit.x;
-                float dstThrough = min(hit.y, maxDst);
+
+                // FIX: maxDst — дистанция от origin по лучу
+                float dstThrough = min(hit.y, maxDst - dstToBox);
+                if (dstThrough <= 0.0) return info;
 
                 float stepSize = max(_StepSize, 1e-4);
 
-                // стартуем чуть внутри bounds
                 float t = TinyNudge;
                 float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
 
@@ -325,18 +580,16 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                     bool found = false;
                     if (findNextFluidEntryPoint)
                     {
-                        // ищем вход: снаружи -> внутри
                         found = insideFluid && hasExittedFluid;
                     }
                     else
                     {
-                        // ищем выход: внутри -> снаружи (или конец)
                         found = hasEnteredFluid && (!insideFluid || isLastStep);
                     }
 
                     if (found)
                     {
-                        info.pos = lastPosInFluid;   // точка внутри, рядом с поверхностью
+                        info.pos = lastPosInFluid;
                         info.foundSurface = true;
                         return info;
                     }
@@ -347,23 +600,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return info;
             }
 
-            // -------- "No environment": sample _MainTex by ray direction --------
-            float2 UVFromWorldDir(float3 dirWS)
-            {
-                float3 dirVS = mul(UNITY_MATRIX_V, float4(dirWS, 0)).xyz;
-
-                // за камерой - невалидно
-                if (-dirVS.z < 1e-5)
-                    return float2(0.5, 0.5);
-
-                // приводим к плоскости z=-1, чтобы стабильнее проектировалось
-                float t = 1.0 / max(1e-5, -dirVS.z);
-                float3 pVS = dirVS * t; // z = -1
-
-                float4 clip = mul(UNITY_MATRIX_P, float4(pVS, 1));
-                float2 uv = clip.xy / max(1e-5, clip.w) * 0.5 + 0.5;
-                return uv;
-            }
+            // ----------------- Sky + LightWithEnv -----------------
 
             float3 SampleSky(float3 dir)
             {
@@ -379,157 +616,45 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return lerp(colGround, skyGradient, groundToSkyT) + sun * (groundToSkyT >= 1.0);
             }
 
-            // --- helpers ---
-            float Hash12(float2 p)
+            // NEW: выбираем ближайший объект (sphere/plane) по t
+            float3 LightWithEnv(float3 dirWS, float3 posWS)
             {
-                // стабильный хэш 0..1
-                return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
-            }
-
-            // Hue rotation через YIQ (angle в радианах)
-            float3 HueShiftYIQ(float3 rgb, float angle)
-            {
-                const float3 toY  = float3(0.299, 0.587, 0.114);
-                const float3 toI  = float3(0.596, -0.274, -0.322);
-                const float3 toQ  = float3(0.211, -0.523, 0.312);
-
-                float  Y = dot(rgb, toY);
-                float  I = dot(rgb, toI);
-                float  Q = dot(rgb, toQ);
-
-                float ca = cos(angle);
-                float sa = sin(angle);
-
-                float I2 = I * ca - Q * sa;
-                float Q2 = I * sa + Q * ca;
-
-                float3 outRgb;
-                outRgb.r = Y + 0.956 * I2 + 0.621 * Q2;
-                outRgb.g = Y - 0.272 * I2 - 0.647 * Q2;
-                outRgb.b = Y - 1.107 * I2 + 1.705 * Q2;
-                return outRgb;
-            }
-
-            float4 RayRectCheckerPlane(float3 posWS, float3 dirWS)
-            {
-                // ----- hardcode: параметры плоскости -----
-                const float3 planeCenterWS = float3(10.0, -0.05, 5.0);
-                const float3 n = float3(0.0, 1.0, 0.0);
-
-                const float3 uAxis = float3(1.0, 0.0, 0.0);
-                const float3 vAxis = float3(0.0, 0.0, 1.0);
-
-                const float a = 30.0;
-                const float b = 20.0;
-
-                const float tileA = 0.5;
-                const float tileB = 0.5;
-
-                // 4 базовых цвета
-                const float3 colBL = float3(0.55, 0.86, 0.78);
-                const float3 colBR = float3(0.90, 0.80, 0.54);
-                const float3 colTL = float3(0.93, 0.62, 0.62);
-                const float3 colTR = float3(0.62, 0.55, 0.92);
-
-                // ----- пересечение луча с плоскостью -----
                 float3 rd = normalize(dirWS);
-                float denom = dot(n, rd);
-                if (abs(denom) < 1e-6) return float4(0, 0, 0, 0);
 
-                float t = dot(n, (planeCenterWS - posWS)) / denom;
-                if (t <= 0.0) return float4(0, 0, 0, 0);
+                float tBest = 1e20;
+                float3 cBest = 0;
+                bool hit = false;
 
-                float3 hitWS = posWS + rd * t;
+                // sphere
+                {
+                    float tS; float3 cS;
+                    if (RayLitSphereHit(posWS, rd, tS, cS) && tS < tBest)
+                    {
+                        tBest = tS; cBest = cS; hit = true;
+                    }
+                }
 
-                // ----- координаты в плоскости -----
-                float3 d = hitWS - planeCenterWS;
-                float u = dot(d, uAxis);
-                float v = dot(d, vAxis);
+                // plane
+                {
+                    float tP; float3 cP;
+                    if (RayRectCheckerPlaneHit(posWS, rd, tP, cP) && tP < tBest)
+                    {
+                        tBest = tP; cBest = cP; hit = true;
+                    }
+                }
 
-                if (abs(u) > a * 0.5 || abs(v) > b * 0.5)
-                    return float4(0, 0, 0, 0);
-
-                float u01 = u + a * 0.5;
-                float v01 = v + b * 0.5;
-
-                // ----- 4 квадранта -----
-                float qx = step(a * 0.5, u01);
-                float qy = step(b * 0.5, v01);
-
-                float3 bottom = lerp(colBL, colBR, qx);
-                float3 top    = lerp(colTL, colTR, qx);
-                float3 baseCol = lerp(bottom, top, qy);
-
-                // ----- индексы клетки -----
-                float cellU = floor(u01 / tileA);
-                float cellV = floor(v01 / tileB);
-
-                // ----- рандом на каждый тайл: hue + brightness -----
-                float2 cellId = float2(cellU, cellV);
-
-                float r1 = Hash12(cellId + 13.37);
-                float r2 = Hash12(cellId + 91.11);
-
-                // яркость: примерно -12%..+6%
-                float brightness = lerp(0.66, 1.06, r1);
-
-                // hue: примерно -18°..+18° (в радианах)
-                float hueAngle = (r2 - 0.5) * 0.62; // 0.62 rad ~ 35.5°
-
-                float3 variedBase = HueShiftYIQ(baseCol, hueAngle);
-                variedBase *= brightness;
-                variedBase = saturate(variedBase);
-
-                // ----- шахматка (светлее/темнее) -----
-                float check = fmod(cellU + cellV, 2.0); // 0/1
-
-                float3 cDark  = variedBase * 0.68;
-                float3 cLight = saturate(variedBase * 1.10 + 0.03);
-                float3 c = lerp(cLight, cDark, check);
-
-                // ----- тонкие линии сетки -----
-                float fu = frac(u01 / tileA);
-                float fv = frac(v01 / tileB);
-                float edge = min(min(fu, 1.0 - fu), min(fv, 1.0 - fv));
-
-                const float gridWidth = 0.045; // в долях клетки
-                float lineMask = 1.0 - smoothstep(0.0, gridWidth, edge);
-                c = lerp(c, saturate(c + 0.10), lineMask * 0.65);
-
-                // ----- разделители между квадрантами -----
-                const float seamW = 0.035;
-                float seamU = 1.0 - smoothstep(0.0, seamW, abs(u));
-                float seamV = 1.0 - smoothstep(0.0, seamW, abs(v));
-                float seam = max(seamU, seamV);
-                c = lerp(c, float3(0.95, 0.95, 0.95), seam * 0.75);
-
-                // ----- лёгкое затемнение к краям прямоугольника -----
-                float edgeU = (a * 0.5 - abs(u));
-                float edgeV = (b * 0.5 - abs(v));
-                float edgeMin = min(edgeU, edgeV);
-                float edgeFade = smoothstep(0.0, 0.35, edgeMin);
-                c *= lerp(0.75, 1.0, edgeFade);
-
-                return float4(saturate(c), 1.0);
+                if (hit) return cBest;
+                return SampleSky(rd);
             }
 
-            float3 LightWithEnv(float3 dirWS, float3 pos)
-            {
-                //float2 uv = UVFromWorldDir(dirWS);
-                //uv = clamp(uv, 0.001, 0.999);
-                //return tex2D(_MainTex, uv).rgb;
-                float4 plane = RayRectCheckerPlane(pos, dirWS); // <-- ВАЖНО: pos первым, dir вторым
-                if (plane.a > 0.5)                              // чуть надежнее чем == 1.0
-                    return plane.rgb;
-                return SampleSky(dirWS);
-            }
+            // ----------------- Trace -----------------
 
             float3 TraceLikeFluid(float3 ro, float3 rd)
             {
                 bool travellingThroughFluid = IsInsideFluid(ro);
 
-                float3 T = 1.0;     // accumulated transmittance
-                float3 col = 0.0;   // accumulated light
+                float3 T = 1.0;
+                float3 col = 0.0;
 
                 int bounces = (int)round(_NumBounces);
                 bounces = clamp(bounces, 1, 16);
@@ -541,33 +666,34 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
                     bool searchForNextEntry = !travellingThroughFluid;
 
-                    SurfaceInfo s = FindNextSurface(ro, rd, searchForNextEntry, _MaxDistance);
+                    // NEW: ограничиваем поиск поверхности жидкость/воздух ближайшими solid'ами
+                    float maxDstThisRay = ClampMaxDistToSolids(ro, rd, _MaxDistance);
+
+                    SurfaceInfo s = FindNextSurface(ro, rd, searchForNextEntry, maxDstThisRay);
                     if (!s.foundSurface) break;
 
-                    // поглощение до поверхности
                     T *= Transmittance(s.densityAlongRay);
 
                     float3 n = CalculateNormalWorld(s.pos, rd);
 
-                    // IOR
                     float iorA = travellingThroughFluid ? _IOR : iorAir;
                     float iorB = travellingThroughFluid ? iorAir : _IOR;
 
                     LightResponse lr = CalculateReflectionAndRefraction(rd, n, iorA, iorB);
 
                     float densityStep = max(_BounceDensityStepSize * (i + 1), 1e-4);
+
                     float dRefr = CalculateDensityAlongRay(s.pos + lr.refractDir * TinyNudge, lr.refractDir, densityStep);
                     float dRefl = CalculateDensityAlongRay(s.pos + lr.reflectDir * TinyNudge, lr.reflectDir, densityStep);
 
                     bool traceRefr = (dRefr * lr.refractWeight) > (dRefl * lr.reflectWeight);
 
-                    // "менее интересный" путь добавляем сразу
+                    // NEW: LightWithEnv берём из той же точки, что и dRefr/dRefl (с нуджем)
                     if (traceRefr)
-                        col += LightWithEnv(lr.reflectDir, s.pos) * T * Transmittance(dRefl) * lr.reflectWeight;
+                        col += LightWithEnv(lr.reflectDir, s.pos + lr.reflectDir * TinyNudge) * T * Transmittance(dRefl) * lr.reflectWeight;
                     else
-                        col += LightWithEnv(lr.refractDir, s.pos) * T * Transmittance(dRefr) * lr.refractWeight;
+                        col += LightWithEnv(lr.refractDir, s.pos + lr.refractDir * TinyNudge) * T * Transmittance(dRefr) * lr.refractWeight;
 
-                    // продолжаем "более интересный" путь
                     float3 nextDir = traceRefr ? lr.refractDir : lr.reflectDir;
                     float  nextW   = traceRefr ? lr.refractWeight : lr.reflectWeight;
 
@@ -575,16 +701,13 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                     rd = nextDir;
                     T *= nextW;
 
-                    // если преломились — сменили среду
                     if (traceRefr) travellingThroughFluid = !travellingThroughFluid;
 
-                    // если T почти ноль — можно выйти
                     if (max(T.x, max(T.y, T.z)) < 1e-4) break;
                 }
 
-                // остаток пути (как в конце второго шейдера)
                 float dRem = CalculateDensityAlongRay(ro, rd, max(_BounceDensityStepSize, 1e-4));
-                col += LightWithEnv(rd, ro) * T * Transmittance(dRem);
+                col += LightWithEnv(rd, ro + rd * TinyNudge) * T * Transmittance(dRem);
 
                 return col;
             }
