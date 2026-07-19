@@ -17,16 +17,16 @@ public class PBFRaymarchCamera : MonoBehaviour
     public float densityMultiplier = 0.0045f;
     public float stepSize = 0.03f;
 
-    [Header("Refraction")]
-    public float indexOfRefraction = 1.333f;   // вода ~1.333
-    public float refractionStrength = 1.0f;    // 0..1 (можно >1 для усиления)
+    [Header("Medium / Extinction")]
+    public Vector3 scatteringCoefficients = new Vector3(1f, 1f, 1f); // в новом шейдере это extinctionCoeff
+    public float normalEps = 0.005f;
 
-    [Header("Color")]
-    public Vector3 scatteringCoefficients = new Vector3(1f, 1f, 1f);
+    [Header("IOR")]
+    public float indexOfRefraction = 1.333f; // вода ~1.333
 
-    [Header("Lighting")]
-    public Light directionalLight;                 // если null, возьмём RenderSettings.sun
-    public float lightMarchStepSize = 0.15f;       // шаг марча по лучу к солнцу
+    [Header("Boundary tracing (like Fluid/Raymarching)")]
+    [Range(1, 16)] public int numBounces = 4;
+    public float bounceDensityStepSize = 0.15f;
 
     private Camera _cam;
     private Material _raymarchMat;
@@ -55,8 +55,8 @@ public class PBFRaymarchCamera : MonoBehaviour
 
     private void OnEnable()
     {
-        // Нужна depth texture для screen-space refraction
-        Cam.depthTextureMode |= DepthTextureMode.Depth;
+        // Новый шейдер НЕ использует depth texture (нет screen-space refraction)
+        // Cam.depthTextureMode |= DepthTextureMode.Depth;
     }
 
     void OnDisable()
@@ -68,7 +68,7 @@ public class PBFRaymarchCamera : MonoBehaviour
         }
     }
 
-    // ВАЖНО: гарантируем, что density volume построена до рендера камеры
+    // гарантируем, что density volume построена до рендера камеры
     void OnPreRender()
     {
         if (densityMap != null)
@@ -84,7 +84,7 @@ public class PBFRaymarchCamera : MonoBehaviour
             return;
         }
 
-        // фон (source) нужен для рефракции
+        // "окружение" в текущей версии шейдера — это просто source
         mat.SetTexture("_MainTex", source);
 
         // Матрицы луча
@@ -106,30 +106,19 @@ public class PBFRaymarchCamera : MonoBehaviour
         // Volume texture
         mat.SetTexture("_DensityMap", densityMap.DensityTexture);
 
-        // Scattering
+        // Extinction (в шейдере используется как extinctionCoeff через Transmittance())
         mat.SetVector("_ScatteringCoefficients",
             new Vector4(scatteringCoefficients.x, scatteringCoefficients.y, scatteringCoefficients.z, 0));
 
-        // Refraction params
+        // Normal epsilon
+        mat.SetFloat("_NormalEps", normalEps);
+
+        // IOR
         mat.SetFloat("_IOR", indexOfRefraction);
-        mat.SetFloat("_RefractionStrength", refractionStrength);
 
-        // Light
-        Light sun = directionalLight != null ? directionalLight : RenderSettings.sun;
-
-        Vector3 dirToSun = sun != null ? -sun.transform.forward : Vector3.up;
-        dirToSun.Normalize();
-
-        Vector3 lightColor = Vector3.one;
-        if (sun != null)
-        {
-            Color c = sun.color * sun.intensity;
-            lightColor = new Vector3(c.r, c.g, c.b);
-        }
-
-        mat.SetVector("_DirToSun", new Vector4(dirToSun.x, dirToSun.y, dirToSun.z, 0));
-        mat.SetFloat("_LightMarchStepSize", lightMarchStepSize);
-        mat.SetVector("_LightColor", new Vector4(lightColor.x, lightColor.y, lightColor.z, 0));
+        // New: bounces like Fluid/Raymarching
+        mat.SetFloat("_NumBounces", Mathf.Clamp(numBounces, 1, 16));
+        mat.SetFloat("_BounceDensityStepSize", Mathf.Max(1e-4f, bounceDensityStepSize));
 
         // Fullscreen quad (vertex.z несёт индекс 0..3)
         RenderTexture.active = destination;

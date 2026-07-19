@@ -1,19 +1,18 @@
-Shader "PeerPlay/PBF/RaymarchDensityDebug"
+Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 {
     Properties
     {
         _MainTex ("Texture", 2D) = "white" {}
         _DensityMap ("Density Map (3D)", 3D) = "" {}
 
-        _ScatteringCoefficients ("Scattering Coefficients (RGB)", Vector) = (1,1,1,0)
-        _DirToSun ("Dir To Sun (WS)", Vector) = (0,1,0,0)
-        _LightColor ("Light Color (RGB)", Vector) = (1,1,1,0)
-        _LightMarchStepSize ("Light March Step Size", Float) = 0.15
+        _ScatteringCoefficients ("Extinction Coefficients (RGB)", Vector) = (1,1,1,0)
 
         _NormalEps ("Normal Epsilon (World units)", Float) = 0.005
 
         _IOR ("Index Of Refraction", Float) = 1.333
-        _RefractionStrength ("Refraction Strength", Float) = 1
+
+        _NumBounces ("Num Bounces (boundary events)", Range(1,8)) = 1
+        _BounceDensityStepSize ("Bounce Density Step Size", Float) = 0.15
     }
 
     SubShader
@@ -34,8 +33,6 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
 
             sampler3D _DensityMap;
 
-            UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
-
             float4x4 _CamFrustum;
             float4x4 _CamToWorld;
 
@@ -47,15 +44,15 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
             float _DensityMultiplier;
             float _StepSize;
 
-            float4 _ScatteringCoefficients; // xyz
-            float4 _DirToSun;               // xyz
-            float4 _LightColor;             // xyz
-            float  _LightMarchStepSize;
-
+            float4 _ScatteringCoefficients; // xyz used as extinction
             float _NormalEps;
 
             float _IOR;
-            float _RefractionStrength;
+            float _NumBounces;
+            float _BounceDensityStepSize;
+
+            static const float TinyNudge = 1e-3;
+            static const float iorAir = 1.0;
 
             struct appdata
             {
@@ -87,6 +84,15 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 return o;
             }
 
+            float2 FixUVForPlatform(float2 uv)
+            {
+                #if UNITY_UV_STARTS_AT_TOP
+                if (_MainTex_TexelSize.y < 0)
+                    uv.y = 1.0 - uv.y;
+                #endif
+                return uv;
+            }
+
             float2 RayBox(float3 bmin, float3 bmax, float3 ro, float3 rd)
             {
                 float3 inv = 1.0 / rd;
@@ -114,7 +120,13 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
 
                 float3 uvw = (pWorld - bmin) / bsize;
 
-                if (uvw.x < 0 || uvw.y < 0 || uvw.z < 0 || uvw.x > 1 || uvw.y > 1 || uvw.z > 1)
+                // вне bounds считаем нулевую плотность
+                if (any(uvw < 0.0) || any(uvw > 1.0))
+                    return 0.0;
+
+                // можно слегка “убить” края, как во 2-м шейдере, чтобы не ловить артефакты
+                const float eps = 1e-4;
+                if (any(uvw <= eps) || any(uvw >= 1.0 - eps))
                     return 0.0;
 
                 return tex3D(_DensityMap, uvw).r;
@@ -122,8 +134,20 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
 
             float DensityField(float3 pWorld)
             {
-                // поле вокруг изо-поверхности: <0 снаружи, >0 внутри
+                // <0 снаружи, >0 внутри жидкости
                 return SampleDensityWorld(pWorld) - _DensityOffset;
+            }
+
+            bool IsInsideBounds(float3 pWorld)
+            {
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+                return all(pWorld >= bmin) && all(pWorld <= bmax);
+            }
+
+            bool IsInsideFluid(float3 pWorld)
+            {
+                return IsInsideBounds(pWorld) && (DensityField(pWorld) > 0.0);
             }
 
             float3 CalculateNormalWorld(float3 pWorld, float3 viewDir)
@@ -143,31 +167,30 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float dz = DensityField(pWorld + ez) - DensityField(pWorld - ez);
 
                 float3 grad = float3(dx, dy, dz);
-
                 float len2 = dot(grad, grad);
                 float3 n = (len2 > 1e-12) ? (-grad * rsqrt(len2)) : float3(0, 1, 0);
 
-                // faceforward — чтобы нормаль была ориентирована против направления взгляда
+                // faceforward
                 if (dot(n, viewDir) > 0) n = -n;
-
                 return n;
             }
 
+            // optical depth along ray inside bounds (как во 2-м шейдере)
             float CalculateDensityAlongRay(float3 roWorld, float3 rdWorld, float stepSize)
             {
+                if (dot(rdWorld, rdWorld) < 0.9) return 0.0;
+
                 float3 bmin = _BoundsMin.xyz;
                 float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
 
                 float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
-                const float TinyNudge = 1e-3;
-
                 if (hit.y <= 0.0)
                     return 0.0;
 
                 float step = max(stepSize, 1e-4);
 
                 float dstToBox = hit.x;
-                float dstThrough = hit.y;
+                float dstThrough = min(hit.y, _MaxDistance);
 
                 float t = TinyNudge;
                 float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
@@ -175,14 +198,14 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float accum = 0.0;
 
                 [loop]
-                for (int i = 0; i < 512; i++)
+                for (int i = 0; i < 1024; i++)
                 {
                     if (t >= tEnd) break;
 
                     float3 p = roWorld + rdWorld * (dstToBox + t);
 
-                    float raw = SampleDensityWorld(p);
-                    float dens = max(0.0, raw - _DensityOffset);
+                    float f = DensityField(p);
+                    float dens = max(0.0, f);
 
                     accum += dens * _DensityMultiplier * step;
                     t += step;
@@ -191,188 +214,235 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 return accum;
             }
 
-            bool RaymarchSurfaceHit(float3 roWorld, float3 rdWorld, out float3 hitPos)
+            float3 Transmittance(float opticalDepth)
             {
-                float3 bmin = _BoundsMin.xyz;
-                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
-
-                float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
-                if (hit.y <= 0.0) { hitPos = 0; return false; }
-
-                float stepSize = max(_StepSize, 1e-4);
-
-                float dstToBox = hit.x;
-                float dstThrough = min(hit.y, _MaxDistance);
-
-                const float TinyNudge = 1e-3;
-                float t = TinyNudge;
-                float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
-
-                float3 p0 = roWorld + rdWorld * (dstToBox + t);
-                float f0 = DensityField(p0);
-
-                [loop]
-                for (int i = 0; i < 4096; i++)
-                {
-                    t += stepSize;
-                    if (t >= tEnd) break;
-
-                    float3 p1 = roWorld + rdWorld * (dstToBox + t);
-                    float f1 = DensityField(p1);
-
-                    if (f0 <= 0.0 && f1 > 0.0)
-                    {
-                        // уточнение бинарным поиском
-                        float3 lo = p0; float flo = f0;
-                        float3 hi = p1; float fhi = f1;
-
-                        [unroll]
-                        for (int j = 0; j < 5; j++)
-                        {
-                            float3 mid = 0.5 * (lo + hi);
-                            float fmid = DensityField(mid);
-
-                            if (fmid > 0.0) { hi = mid; fhi = fmid; }
-                            else           { lo = mid; flo = fmid; }
-                        }
-
-                        hitPos = hi; // точка внутри (чуть за порогом)
-                        return true;
-                    }
-
-                    p0 = p1;
-                    f0 = f1;
-                }
-
-                hitPos = 0;
-                return false;
+                float3 ext = max(_ScatteringCoefficients.xyz, 0.0); // используем как extinctionCoeff
+                return exp(-opticalDepth * ext);
             }
 
-            // ---------- Refraction helpers (screen-space) ----------
+            // -------- Fresnel / reflection / refraction (как во 2-м шейдере) --------
 
-            float3 RefractDir(float3 I, float3 N, float eta)
+            float CalculateReflectance(float3 inDir, float3 normal, float iorA, float iorB)
             {
-                // I,N нормализованы. eta = iorA/iorB
-                float cosi = clamp(dot(-I, N), -1.0, 1.0);
-                float k = 1.0 - eta * eta * (1.0 - cosi * cosi);
-                if (k < 0.0) return float3(0,0,0); // TIR
-                return eta * I + (eta * cosi - sqrt(k)) * N;
+                float refractRatio = iorA / iorB;
+                float cosAngleIn = -dot(inDir, normal);
+                float sinSqrAngleOfRefraction = refractRatio * refractRatio * (1.0 - cosAngleIn * cosAngleIn);
+                if (sinSqrAngleOfRefraction >= 1.0) return 1.0; // TIR
+
+                float cosAngleOfRefraction = sqrt(1.0 - sinSqrAngleOfRefraction);
+
+                float rPerp = (iorA * cosAngleIn - iorB * cosAngleOfRefraction) / (iorA * cosAngleIn + iorB * cosAngleOfRefraction);
+                rPerp *= rPerp;
+
+                float rPar = (iorB * cosAngleIn - iorA * cosAngleOfRefraction) / (iorB * cosAngleIn + iorA * cosAngleOfRefraction);
+                rPar *= rPar;
+
+                return (rPerp + rPar) * 0.5;
             }
 
-            float2 FixUVForPlatform(float2 uv)
+            float3 ReflectDir(float3 inDir, float3 normal)
             {
-                #if UNITY_UV_STARTS_AT_TOP
-                if (_MainTex_TexelSize.y < 0)
-                    uv.y = 1.0 - uv.y;
-                #endif
-                return uv;
+                return inDir - 2.0 * dot(inDir, normal) * normal;
             }
 
-            float2 ComputeRefractedUV(float2 uv, float3 rdWS, float3 nWS)
+            float3 RefractDir(float3 inDir, float3 normal, float iorA, float iorB)
             {
-                uv = FixUVForPlatform(uv);
+                float refractRatio = iorA / iorB;
+                float cosAngleIn = -dot(inDir, normal);
+                float sinSqrAngleOfRefraction = refractRatio * refractRatio * (1.0 - cosAngleIn * cosAngleIn);
+                if (sinSqrAngleOfRefraction > 1.0) return float3(0,0,0); // TIR
 
-                // depth непрозрачной геометрии за пикселем
-                float raw = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv);
-                float eyeDepth = LinearEyeDepth(raw);
-
-                // если skybox/нет глубины — не смещаем
-                if (eyeDepth <= 1e-4) return uv;
-
-                // в view-space
-                float3 rdVS = normalize(mul(UNITY_MATRIX_V, float4(rdWS, 0)).xyz);
-                float3 nVS  = normalize(mul(UNITY_MATRIX_V, float4(nWS,  0)).xyz);
-
-                // воздух -> жидкость (eta = 1/IOR)
-                float eta = 1.0 / max(_IOR, 1.0001);
-                float3 rrVS = normalize(RefractDir(rdVS, nVS, eta));
-
-                // TIR -> отражение
-                if (dot(rrVS, rrVS) < 0.5)
-                    rrVS = normalize(reflect(rdVS, nVS));
-
-                // пересечение с плоскостью z = -eyeDepth
-                float t = eyeDepth / max(1e-5, -rrVS.z);
-                float3 pVS = rrVS * t;
-
-                // проектирование в UV
-                float4 clip = mul(UNITY_MATRIX_P, float4(pVS, 1));
-                float2 uvRefr = clip.xy / max(1e-5, clip.w) * 0.5 + 0.5;
-
-                // сила
-                uvRefr = lerp(uv, uvRefr, saturate(_RefractionStrength));
-
-                // чтобы не улетать за экран
-                uvRefr = clamp(uvRefr, 0.001, 0.999);
-                return uvRefr;
+                return refractRatio * inDir + (refractRatio * cosAngleIn - sqrt(1.0 - sinSqrAngleOfRefraction)) * normal;
             }
 
-            // ---------- Volume march result ----------
-
-            struct MarchResult
+            struct LightResponse
             {
-                float3 inscatter;
-                float3 transmittance;
+                float3 reflectDir;
+                float3 refractDir;
+                float  reflectWeight;
+                float  refractWeight;
             };
 
-            MarchResult RayMarchFluidEx(float3 roWorld, float3 rdWorld)
+            LightResponse CalculateReflectionAndRefraction(float3 inDir, float3 normal, float iorA, float iorB)
             {
-                MarchResult r;
-                r.inscatter = 0;
-                r.transmittance = 1;
+                LightResponse r;
+                r.reflectWeight = CalculateReflectance(inDir, normal, iorA, iorB);
+                r.refractWeight = 1.0 - r.reflectWeight;
+                r.reflectDir = normalize(ReflectDir(inDir, normal));
+                r.refractDir = normalize(RefractDir(inDir, normal, iorA, iorB)); // может стать (0,0,0) при TIR
+                return r;
+            }
+
+            // -------- Surface stepping (FindNextSurface как во 2-м шейдере) --------
+
+            struct SurfaceInfo
+            {
+                float3 pos;
+                float  densityAlongRay;
+                bool   foundSurface;
+            };
+
+            SurfaceInfo FindNextSurface(float3 origin, float3 rayDir, bool findNextFluidEntryPoint, float maxDst)
+            {
+                SurfaceInfo info = (SurfaceInfo)0;
+                if (dot(rayDir, rayDir) < 0.5) return info;
 
                 float3 bmin = _BoundsMin.xyz;
                 float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
 
-                float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
+                float2 hit = RayBox(bmin, bmax, origin, rayDir);
+                if (hit.y <= 0.0) return info;
 
-                const float TinyNudge = 1e-3;
-                if (hit.y <= 0.0)
-                    return r;
+                float dstToBox = hit.x;
+                float dstThrough = min(hit.y, maxDst);
 
                 float stepSize = max(_StepSize, 1e-4);
 
-                float dstToBox = hit.x;
-                float dstThrough = min(hit.y, _MaxDistance);
-
+                // стартуем чуть внутри bounds
                 float t = TinyNudge;
                 float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
 
-                float densityAlongViewRay = 0.0;
-                float3 totalLight = 0;
-
-                float3 scattering = max(_ScatteringCoefficients.xyz, 0);
-                float3 dirToSun = normalize(_DirToSun.xyz);
-                float3 lightColor = max(_LightColor.xyz, 0);
-                float lightStep = max(_LightMarchStepSize, 1e-4);
+                bool hasExittedFluid = !IsInsideFluid(origin);
+                bool hasEnteredFluid = false;
+                float3 lastPosInFluid = origin + rayDir * (dstToBox + t);
 
                 [loop]
                 for (int i = 0; i < 4096; i++)
                 {
                     if (t >= tEnd) break;
 
-                    float3 samplePos = roWorld + rdWorld * (dstToBox + t);
+                    bool isLastStep = (t + stepSize) >= tEnd;
+                    float3 samplePos = origin + rayDir * (dstToBox + t);
 
-                    float raw = SampleDensityWorld(samplePos);
-                    float dens = max(0.0, raw - _DensityOffset);
+                    float f = DensityField(samplePos);
+                    float dens = max(0.0, f);
+                    float thickness = dens * _DensityMultiplier * stepSize;
+                    bool insideFluid = thickness > 0.0;
 
-                    float densityAlongStep = dens * _DensityMultiplier * stepSize;
-                    densityAlongViewRay += densityAlongStep;
+                    if (insideFluid)
+                    {
+                        hasEnteredFluid = true;
+                        lastPosInFluid = samplePos;
+                        info.densityAlongRay += thickness;
+                    }
+                    else
+                    {
+                        hasExittedFluid = true;
+                    }
 
-                    float densityAlongSunRay = CalculateDensityAlongRay(samplePos, dirToSun, lightStep);
+                    bool found = false;
+                    if (findNextFluidEntryPoint)
+                    {
+                        // ищем вход: снаружи -> внутри
+                        found = insideFluid && hasExittedFluid;
+                    }
+                    else
+                    {
+                        // ищем выход: внутри -> снаружи (или конец)
+                        found = hasEnteredFluid && (!insideFluid || isLastStep);
+                    }
 
-                    float3 transmittedSunLight = exp(-densityAlongSunRay * scattering);
-                    float3 inScatteredLight = transmittedSunLight * densityAlongStep * scattering * lightColor;
-
-                    float3 viewRayTransmittance = exp(-densityAlongViewRay * scattering);
-                    totalLight += inScatteredLight * viewRayTransmittance;
+                    if (found)
+                    {
+                        info.pos = lastPosInFluid;   // точка внутри, рядом с поверхностью
+                        info.foundSurface = true;
+                        return info;
+                    }
 
                     t += stepSize;
                 }
 
-                r.inscatter = totalLight;
-                r.transmittance = exp(-densityAlongViewRay * scattering);
-                return r;
+                return info;
+            }
+
+            // -------- "No environment": sample _MainTex by ray direction --------
+            float2 UVFromWorldDir(float3 dirWS)
+            {
+                float3 dirVS = mul(UNITY_MATRIX_V, float4(dirWS, 0)).xyz;
+
+                // за камерой - невалидно
+                if (-dirVS.z < 1e-5)
+                    return float2(0.5, 0.5);
+
+                // приводим к плоскости z=-1, чтобы стабильнее проектировалось
+                float t = 1.0 / max(1e-5, -dirVS.z);
+                float3 pVS = dirVS * t; // z = -1
+
+                float4 clip = mul(UNITY_MATRIX_P, float4(pVS, 1));
+                float2 uv = clip.xy / max(1e-5, clip.w) * 0.5 + 0.5;
+                return FixUVForPlatform(uv);
+            }
+
+            float3 LightNoEnv(float3 dirWS)
+            {
+                float2 uv = UVFromWorldDir(dirWS);
+                uv = clamp(uv, 0.001, 0.999);
+                return tex2D(_MainTex, uv).rgb;
+            }
+
+            float3 TraceLikeFluid(float2 pixelUV, float3 ro, float3 rd)
+            {
+                bool travellingThroughFluid = IsInsideFluid(ro);
+
+                float3 T = 1.0;     // accumulated transmittance
+                float3 col = 0.0;   // accumulated light
+
+                int bounces = (int)round(_NumBounces);
+                bounces = clamp(bounces, 1, 16);
+
+                [loop]
+                for (int i = 0; i < 16; i++)
+                {
+                    if (i >= bounces) break;
+
+                    bool searchForNextEntry = !travellingThroughFluid;
+
+                    SurfaceInfo s = FindNextSurface(ro, rd, searchForNextEntry, _MaxDistance);
+                    if (!s.foundSurface) break;
+
+                    // поглощение до поверхности
+                    T *= Transmittance(s.densityAlongRay);
+
+                    float3 n = CalculateNormalWorld(s.pos, rd);
+
+                    // IOR
+                    float iorA = travellingThroughFluid ? _IOR : iorAir;
+                    float iorB = travellingThroughFluid ? iorAir : _IOR;
+
+                    LightResponse lr = CalculateReflectionAndRefraction(rd, n, iorA, iorB);
+
+                    float densityStep = max(_BounceDensityStepSize * (i + 1), 1e-4);
+                    float dRefr = CalculateDensityAlongRay(s.pos + lr.refractDir * TinyNudge, lr.refractDir, densityStep);
+                    float dRefl = CalculateDensityAlongRay(s.pos + lr.reflectDir * TinyNudge, lr.reflectDir, densityStep);
+
+                    bool traceRefr = (dRefr * lr.refractWeight) > (dRefl * lr.reflectWeight);
+
+                    // "менее интересный" путь добавляем сразу
+                    if (traceRefr)
+                        col += LightNoEnv(lr.reflectDir) * T * Transmittance(dRefl) * lr.reflectWeight;
+                    else
+                        col += LightNoEnv(lr.refractDir) * T * Transmittance(dRefr) * lr.refractWeight;
+
+                    // продолжаем "более интересный" путь
+                    float3 nextDir = traceRefr ? lr.refractDir : lr.reflectDir;
+                    float  nextW   = traceRefr ? lr.refractWeight : lr.reflectWeight;
+
+                    ro = s.pos + nextDir * TinyNudge;
+                    rd = nextDir;
+                    T *= nextW;
+
+                    // если преломились — сменили среду
+                    if (traceRefr) travellingThroughFluid = !travellingThroughFluid;
+
+                    // если T почти ноль — можно выйти
+                    if (max(T.x, max(T.y, T.z)) < 1e-4) break;
+                }
+
+                // остаток пути (как в конце второго шейдера)
+                float dRem = CalculateDensityAlongRay(ro, rd, max(_BounceDensityStepSize, 1e-4));
+                col += LightNoEnv(rd) * T * Transmittance(dRem);
+
+                return col;
             }
 
             fixed4 frag(v2f i) : SV_Target
@@ -382,22 +452,7 @@ Shader "PeerPlay/PBF/RaymarchDensityDebug"
                 float3 ro = _WorldSpaceCameraPos;
                 float3 rd = normalize(i.rayWS);
 
-                // 1) UV для рефракции: ищем точку входа и нормаль
-                float2 uvRefr = uv;
-                float3 hitPos;
-                if (RaymarchSurfaceHit(ro, rd, hitPos))
-                {
-                    float3 n = CalculateNormalWorld(hitPos, rd);
-                    uvRefr = ComputeRefractedUV(uv, rd, n);
-                }
-
-                float3 bg = tex2D(_MainTex, uvRefr).rgb;
-
-                // 2) volumetric + transmittance
-                MarchResult m = RayMarchFluidEx(ro, rd);
-
-                // 3) композитинг
-                float3 col = bg * m.transmittance + m.inscatter;
+                float3 col = TraceLikeFluid(uv, ro, rd);
                 return fixed4(saturate(col), 1.0);
             }
 
