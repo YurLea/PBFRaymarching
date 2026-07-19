@@ -370,7 +370,7 @@ Transform:
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
   m_LocalRotation: {x: 0.10567535, y: 0.29331383, z: -0.03264126, w: 0.94959694}
-  m_LocalPosition: {x: -4.6, y: 8, z: -8.8}
+  m_LocalPosition: {x: -4, y: 8, z: -8.8}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -410,14 +410,14 @@ MonoBehaviour:
   densityMap: {fileID: 1703057817}
   _shader: {fileID: 4800000, guid: 6ed9101590b62e845acf0e09bef7b1fe, type: 3}
   maxDistance: 50
-  densityOffset: 35
-  densityMultiplier: 0.001
-  stepSize: 0.025
+  densityOffset: 40
+  densityMultiplier: 0.003
+  stepSize: 0.05
   scatteringCoefficients: {x: 7.83, y: 4.84, z: 0.76}
-  normalEps: 0.009
+  normalEps: 0.03
   indexOfRefraction: 1.333
-  numBounces: 2
-  bounceDensityStepSize: 0.025
+  numBounces: 1
+  bounceDensityStepSize: 0.05
   sun: {fileID: 705507994}
 --- !u!1 &1703057816
 GameObject:

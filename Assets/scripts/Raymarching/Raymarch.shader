@@ -379,11 +379,73 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
                 return lerp(colGround, skyGradient, groundToSkyT) + sun * (groundToSkyT >= 1.0);
             }
 
-            float3 LightNoEnv(float3 dirWS)
+                        // Возвращает цвет прямоугольной плоскости (шахматка) при пересечении лучом.
+            // Если пересечения нет — возвращает float4(0,0,0,0) (прозрачный/нет попадания).
+            float4 RayRectCheckerPlane(float3 posWS, float3 dirWS)
+            {
+                // ----- hardcode: параметры плоскости -----
+                const float3 planeCenterWS = float3(10.0, -0.01, 6.0);   // центр прямоугольника
+                const float3 n = float3(0.0, 1.0, 0.0);               // нормаль (плоскость "пол")
+
+                // Оси прямоугольника в плоскости (ортонормальные базисы)
+                const float3 uAxis = float3(1.0, 0.0, 0.0);           // вдоль X
+                const float3 vAxis = float3(0.0, 0.0, 1.0);           // вдоль Z
+
+                const float a = 20.0;  // длина по uAxis
+                const float b = 12.0;   // длина по vAxis
+
+                // Размеры тайлов шахматки
+                const float tileA = 0.5; // по uAxis
+                const float tileB = 0.5; // по vAxis
+
+                const float3 col0 = float3(0.35, 0.35, 0.35); // темный
+                const float3 col1 = float3(0.90, 0.90, 0.90); // светлый
+
+                // ----- пересечение луча с плоскостью -----
+                float3 rd = normalize(dirWS);
+                float denom = dot(n, rd);
+
+                // Луч почти параллелен плоскости
+                if (abs(denom) < 1e-6)
+                    return float4(0, 0, 0, 0);
+
+                float t = dot(n, (planeCenterWS - posWS)) / denom;
+
+                // Плоскость "позади" луча
+                if (t <= 0.0)
+                    return float4(0, 0, 0, 0);
+
+                float3 hitWS = posWS + rd * t;
+
+                // ----- проверка попадания в прямоугольник -----
+                float3 d = hitWS - planeCenterWS;
+                float u = dot(d, uAxis); // координата в плоскости
+                float v = dot(d, vAxis);
+
+                // прямоугольник с центром в planeCenterWS
+                if (abs(u) > a * 0.5 || abs(v) > b * 0.5)
+                    return float4(0, 0, 0, 0);
+
+                // ----- шахматка -----
+                // сдвиг в [0..a], [0..b], чтобы узор начинался от угла
+                float u01 = u + a * 0.5;
+                float v01 = v + b * 0.5;
+
+                int iu = (int)floor(u01 / tileA);
+                int iv = (int)floor(v01 / tileB);
+
+                float3 c = (((iu + iv) & 1) == 0) ? col0 : col1;
+                return float4(c, 1.0);
+            }
+
+            float3 LightWithEnv(float3 dirWS, float3 pos)
             {
                 //float2 uv = UVFromWorldDir(dirWS);
                 //uv = clamp(uv, 0.001, 0.999);
                 //return tex2D(_MainTex, uv).rgb;
+                float4 plane = RayRectCheckerPlane(pos, dirWS); // <-- ВАЖНО: pos первым, dir вторым
+                if (plane.a > 0.5)                              // чуть надежнее чем == 1.0
+                    return plane.rgb;
                 return SampleSky(dirWS);
             }
 
@@ -426,9 +488,9 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
                     // "менее интересный" путь добавляем сразу
                     if (traceRefr)
-                        col += LightNoEnv(lr.reflectDir) * T * Transmittance(dRefl) * lr.reflectWeight;
+                        col += LightWithEnv(lr.reflectDir, s.pos) * T * Transmittance(dRefl) * lr.reflectWeight;
                     else
-                        col += LightNoEnv(lr.refractDir) * T * Transmittance(dRefr) * lr.refractWeight;
+                        col += LightWithEnv(lr.refractDir, s.pos) * T * Transmittance(dRefr) * lr.refractWeight;
 
                     // продолжаем "более интересный" путь
                     float3 nextDir = traceRefr ? lr.refractDir : lr.reflectDir;
@@ -447,7 +509,7 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
 
                 // остаток пути (как в конце второго шейдера)
                 float dRem = CalculateDensityAlongRay(ro, rd, max(_BounceDensityStepSize, 1e-4));
-                col += LightNoEnv(rd) * T * Transmittance(dRem);
+                col += LightWithEnv(rd, ro) * T * Transmittance(dRem);
 
                 return col;
             }
