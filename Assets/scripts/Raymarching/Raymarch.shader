@@ -380,62 +380,94 @@ Shader "PeerPlay/PBF/RaymarchLikeFluid_NoEnv"
             }
 
                         // Возвращает цвет прямоугольной плоскости (шахматка) при пересечении лучом.
-            // Если пересечения нет — возвращает float4(0,0,0,0) (прозрачный/нет попадания).
+            // Если пересечения нет — возвращает float4(0,0,0,0).
             float4 RayRectCheckerPlane(float3 posWS, float3 dirWS)
             {
                 // ----- hardcode: параметры плоскости -----
-                const float3 planeCenterWS = float3(10.0, -0.01, 6.0);   // центр прямоугольника
-                const float3 n = float3(0.0, 1.0, 0.0);               // нормаль (плоскость "пол")
+                const float3 planeCenterWS = float3(10.0, -0.05, 5.0);
+                const float3 n = float3(0.0, 1.0, 0.0);
 
-                // Оси прямоугольника в плоскости (ортонормальные базисы)
-                const float3 uAxis = float3(1.0, 0.0, 0.0);           // вдоль X
-                const float3 vAxis = float3(0.0, 0.0, 1.0);           // вдоль Z
+                const float3 uAxis = float3(1.0, 0.0, 0.0);
+                const float3 vAxis = float3(0.0, 0.0, 1.0);
 
-                const float a = 20.0;  // длина по uAxis
-                const float b = 12.0;   // длина по vAxis
+                const float a = 30.0;
+                const float b = 20.0;
 
                 // Размеры тайлов шахматки
-                const float tileA = 0.5; // по uAxis
-                const float tileB = 0.5; // по vAxis
+                const float tileA = 0.5;
+                const float tileB = 0.5;
 
-                const float3 col0 = float3(0.35, 0.35, 0.35); // темный
-                const float3 col1 = float3(0.90, 0.90, 0.90); // светлый
+                // 4 базовых цвета (пастельные), как на рефе
+                const float3 colBL = float3(0.55, 0.86, 0.78); // bottom-left  (мятный)
+                const float3 colBR = float3(0.90, 0.80, 0.54); // bottom-right (песочный)
+                const float3 colTL = float3(0.93, 0.62, 0.62); // top-left     (розовый)
+                const float3 colTR = float3(0.62, 0.55, 0.92); // top-right    (фиолетовый)
 
                 // ----- пересечение луча с плоскостью -----
                 float3 rd = normalize(dirWS);
                 float denom = dot(n, rd);
-
-                // Луч почти параллелен плоскости
-                if (abs(denom) < 1e-6)
-                    return float4(0, 0, 0, 0);
+                if (abs(denom) < 1e-6) return float4(0, 0, 0, 0);
 
                 float t = dot(n, (planeCenterWS - posWS)) / denom;
-
-                // Плоскость "позади" луча
-                if (t <= 0.0)
-                    return float4(0, 0, 0, 0);
+                if (t <= 0.0) return float4(0, 0, 0, 0);
 
                 float3 hitWS = posWS + rd * t;
 
-                // ----- проверка попадания в прямоугольник -----
+                // ----- координаты в плоскости -----
                 float3 d = hitWS - planeCenterWS;
-                float u = dot(d, uAxis); // координата в плоскости
+                float u = dot(d, uAxis);
                 float v = dot(d, vAxis);
 
-                // прямоугольник с центром в planeCenterWS
                 if (abs(u) > a * 0.5 || abs(v) > b * 0.5)
                     return float4(0, 0, 0, 0);
 
-                // ----- шахматка -----
-                // сдвиг в [0..a], [0..b], чтобы узор начинался от угла
+                // сдвиг в [0..a], [0..b]
                 float u01 = u + a * 0.5;
                 float v01 = v + b * 0.5;
 
-                int iu = (int)floor(u01 / tileA);
-                int iv = (int)floor(v01 / tileB);
+                // ----- 4 квадранта по центру прямоугольника -----
+                // qx: 0 = левый, 1 = правый; qy: 0 = низ, 1 = верх
+                float qx = step(a * 0.5, u01);
+                float qy = step(b * 0.5, v01);
 
-                float3 c = (((iu + iv) & 1) == 0) ? col0 : col1;
-                return float4(c, 1.0);
+                float3 bottom = lerp(colBL, colBR, qx);
+                float3 top    = lerp(colTL, colTR, qx);
+                float3 baseCol = lerp(bottom, top, qy);
+
+                // ----- шахматка (чуть светлее/темнее от baseCol) -----
+                float cellU = floor(u01 / tileA);
+                float cellV = floor(v01 / tileB);
+                float check = fmod(cellU + cellV, 2.0); // 0 или 1
+
+                float3 cDark  = baseCol * 0.68;
+                float3 cLight = saturate(baseCol * 1.10 + 0.03);
+                float3 c = lerp(cLight, cDark, check);
+
+                // ----- тонкие линии сетки тайлов -----
+                // lineMask = 1 на границе клетки, 0 в центре
+                float fu = frac(u01 / tileA);
+                float fv = frac(v01 / tileB);
+                float edge = min(min(fu, 1.0 - fu), min(fv, 1.0 - fv));
+
+                const float gridWidth = 0.045; // в "долях клетки"
+                float lineMask = 1.0 - smoothstep(0.0, gridWidth, edge);
+                c = lerp(c, saturate(c + 0.10), lineMask * 0.65);
+
+                // ----- разделители между цветными квадрантами (u=0 и v=0) -----
+                const float seamW = 0.035; // в мировых единицах
+                float seamU = 1.0 - smoothstep(0.0, seamW, abs(u));
+                float seamV = 1.0 - smoothstep(0.0, seamW, abs(v));
+                float seam = max(seamU, seamV);
+                c = lerp(c, float3(0.95, 0.95, 0.95), seam * 0.75);
+
+                // ----- лёгкое затемнение к краям прямоугольника -----
+                float edgeU = (a * 0.5 - abs(u));
+                float edgeV = (b * 0.5 - abs(v));
+                float edgeMin = min(edgeU, edgeV);
+                float edgeFade = smoothstep(0.0, 0.35, edgeMin);
+                c *= lerp(0.88, 1.0, edgeFade);
+
+                return float4(saturate(c), 1.0);
             }
 
             float3 LightWithEnv(float3 dirWS, float3 pos)
