@@ -461,7 +461,7 @@ MonoBehaviour:
   scatteringCoefficients: {x: 6.91, y: 3.92, z: 0.49}
   normalEps: 0.045
   indexOfRefraction: 1.333
-  bounceDensityStepSize: 0.06
+  bounceDensityStepSize: 0.33
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0
