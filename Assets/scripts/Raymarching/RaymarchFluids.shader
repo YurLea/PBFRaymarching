@@ -254,7 +254,7 @@ Shader "Custom/PBF/RaymarchFluid"
                 float s = max(softnessWS, 1e-6);
 
                 // 0 в тени, 1 на свету, плавный переход в зоне [0..s] за границей
-                return shadowIntensity * smoothstep(0.0, s, edge);
+                return smoothstep(0.0, s, edge);
             }
 
             // 2) Обертка "plane rect: color + hitInfo":
@@ -345,7 +345,12 @@ Shader "Custom/PBF/RaymarchFluid"
                 
                 //тень тестовой сферы
                 float3 hitPlane = ro + rd * tHit;
-                col *= lerp(0.15, 1.0, SphereSoftShadowApprox(hitPlane, dirToSun, spherePosition, sphereRadius, shadowSoftness));
+                float sphereHit;
+                col *= lerp(0.1, 1.0, SphereSoftShadowApprox(hitPlane, dirToSun, spherePosition, sphereRadius, shadowSoftness));
+                if (RaySphereIntersect(hitPlane, dirToSun, spherePosition, sphereRadius, sphereHit))
+                {
+                    col *= pow(0.99, shadowIntensity);
+                }
                 
                 return true;
             }
