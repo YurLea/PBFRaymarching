@@ -18,6 +18,24 @@ public class PBFRaymarch : MonoBehaviour
     public Light sun; // Directional Light из сцены
     public float sunIntensity;
 
+    [Header("Plane")] 
+    public Vector3 planeCenter;
+    public float planeWidth;
+    public float planeHeight;
+    public float planeTileWidth;
+    public float planeTileHeight;
+    public Color planeCol1;
+    public Color planeCol2;
+    public Color planeCol3;
+    public Color planeCol4;
+    public float edgeDarkness;
+    public float Brightness;
+    public float hue;
+
+    [Header("Plane")] 
+    public Vector3 spherePosition;
+    public float sphereRadius;
+
     private Camera _cam;
     private Material _raymarchMat;
 
@@ -132,9 +150,28 @@ public class PBFRaymarch : MonoBehaviour
         // Параметры марча
         _raymarchMat.SetFloat("_MaxDistance", maxDistance);
         
+        // Паарметры освещения
         Vector3 dirToSunWS = -sun.transform.forward;          // world-space
         _raymarchMat.SetVector("dirToSun", new Vector4(dirToSunWS.x, dirToSunWS.y, dirToSunWS.z, 0));
         _raymarchMat.SetFloat("sunIntensity", sunIntensity);
+        
+        // Параметры пола
+        _raymarchMat.SetVector("planeCenter", planeCenter);
+        _raymarchMat.SetFloat("planeWidth", planeWidth);
+        _raymarchMat.SetFloat("planeHeight", planeHeight);
+        _raymarchMat.SetFloat("planeTileWidth", planeTileWidth);
+        _raymarchMat.SetFloat("planeTileHeight", planeTileHeight);
+        _raymarchMat.SetColor("planeCol1", planeCol1);    
+        _raymarchMat.SetColor("planeCol2", planeCol2);    
+        _raymarchMat.SetColor("planeCol3", planeCol3);    
+        _raymarchMat.SetColor("planeCol4", planeCol4);    
+        _raymarchMat.SetFloat("edgeDarkness", edgeDarkness);
+        _raymarchMat.SetFloat("Brightness", Brightness);
+        _raymarchMat.SetFloat("hue", hue);
+        
+        // Параметры тестовой сферы
+        _raymarchMat.SetVector("spherePosition", spherePosition);
+        _raymarchMat.SetFloat("sphereRadius", sphereRadius);
     }
 
     /// <summary>

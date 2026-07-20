@@ -209,13 +209,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 705507993}
   serializedVersion: 2
-  m_LocalRotation: {x: -0.8221467, y: 0.517036, z: 0.123171866, w: -0.2039054}
+  m_LocalRotation: {x: -0.80708426, y: 0.48655286, z: 0.19431372, w: -0.27225646}
   m_LocalPosition: {x: 0, y: 3, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 168, y: -335, z: 67}
+  m_LocalEulerAnglesHint: {x: 165.5, y: -323.3, z: 67}
 --- !u!1 &711951253
 GameObject:
   m_ObjectHideFlags: 0
@@ -438,6 +438,20 @@ MonoBehaviour:
   maxDistance: 50
   sun: {fileID: 705507994}
   sunIntensity: 1
+  planeCenter: {x: 10, y: -0.05, z: 5}
+  planeWidth: 30
+  planeHeight: 20
+  planeTileWidth: 0.5
+  planeTileHeight: 0.5
+  planeCol1: {r: 0.9150943, g: 0.81845087, b: 0.3237362, a: 0}
+  planeCol2: {r: 0.4240693, g: 0.8018868, b: 0.374466, a: 0}
+  planeCol3: {r: 0.17528482, g: 0.5495114, b: 0.9528302, a: 0}
+  planeCol4: {r: 0.7735849, g: 0.31016377, b: 0.67925936, a: 0}
+  edgeDarkness: 0.19
+  Brightness: 0.34
+  hue: 0.31
+  spherePosition: {x: 8.43, y: 1.03, z: 4.49}
+  sphereRadius: 0.95
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0
