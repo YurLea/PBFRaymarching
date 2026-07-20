@@ -34,6 +34,7 @@ Shader "Custom/PBF/RaymarchFluid"
 
             float _MaxDistance;        // максимальная дальность марча
             static const float TinyNudge = 1e-3;
+            static const float iorAir = 1.0;
 
             float3 dirToSun;
             float sunIntensity;
@@ -56,6 +57,20 @@ Shader "Custom/PBF/RaymarchFluid"
 
             float shadowSoftness;
             float shadowIntensity;
+
+            float4 _BoundsMin;   // xyz
+            float4 _BoundsSize;  // xyz
+
+            float _DensityMultiplier;
+            float _StepSize;
+            float _DensityOffset;
+
+            float4 _ScatteringCoefficients; // xyz used as extinction
+
+            float _BounceDensityStepSize;
+            float _IOR;
+
+            float _NormalEps;
 
             struct appdata
             {
@@ -98,6 +113,170 @@ Shader "Custom/PBF/RaymarchFluid"
                 o.ray = mul(_CamToWorld, o.ray);
 
                 return o;
+            }
+
+            // ----------------- Calculation funstions -----------------
+
+            float2 RayBox(float3 bmin, float3 bmax, float3 ro, float3 rd)
+            {
+                float3 inv = 1.0 / rd;
+                float3 t0 = (bmin - ro) * inv;
+                float3 t1 = (bmax - ro) * inv;
+
+                float3 tmin3 = min(t0, t1);
+                float3 tmax3 = max(t0, t1);
+
+                float tmin = max(max(tmin3.x, tmin3.y), tmin3.z);
+                float tmax = min(min(tmax3.x, tmax3.y), tmax3.z);
+
+                if (tmax < max(tmin, 0.0))
+                    return float2(0.0, 0.0);
+
+                float dstToBox = max(tmin, 0.0);
+                float dstThroughBox = max(0.0, tmax - dstToBox);
+                return float2(dstToBox, dstThroughBox);
+            }
+
+            float SampleDensityWorld(float3 pWorld)
+            {
+                float3 bmin = _BoundsMin.xyz;
+                float3 bsize = _BoundsSize.xyz;
+
+                float3 uvw = (pWorld - bmin) / bsize;
+
+                if (any(uvw < 0.0) || any(uvw > 1.0))
+                    return 0.0;
+
+                const float eps = 1e-4;
+                if (any(uvw <= eps) || any(uvw >= 1.0 - eps))
+                    return 0.0;
+
+                return tex3D(_DensityMap, uvw).r;
+            }
+
+            float DensityField(float3 pWorld)
+            {
+                // <0 снаружи, >0 внутри жидкости
+                return SampleDensityWorld(pWorld) - _DensityOffset;
+            }
+
+            bool IsInsideBounds(float3 pWorld)
+            {
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+                return all(pWorld >= bmin) && all(pWorld <= bmax);
+            }
+
+            bool IsInsideFluid(float3 pWorld)
+            {
+                return IsInsideBounds(pWorld) && (DensityField(pWorld) > 0.0);
+            }
+
+            float3 CalculateNormalWorld(float3 pWorld, float3 viewDir)
+            {
+                float eps = max(_NormalEps, 1e-4);
+
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+                pWorld = clamp(pWorld, bmin + eps, bmax - eps);
+
+                float3 ex = float3(eps, 0,   0);
+                float3 ey = float3(0,   eps, 0);
+                float3 ez = float3(0,   0,   eps);
+
+                float dx = DensityField(pWorld + ex) - DensityField(pWorld - ex);
+                float dy = DensityField(pWorld + ey) - DensityField(pWorld - ey);
+                float dz = DensityField(pWorld + ez) - DensityField(pWorld - ez);
+
+                float3 grad = float3(dx, dy, dz);
+                float len2 = dot(grad, grad);
+                float3 n = (len2 > 1e-12) ? (-grad * rsqrt(len2)) : float3(0, 1, 0);
+
+                // faceforward
+                if (dot(n, viewDir) > 0) n = -n;
+                return n;
+            }
+
+            // ----------------- Surface stepping -----------------
+
+            struct SurfaceInfo
+            {
+                float3 pos;
+                float  densityAlongRay;
+                bool   foundSurface;
+            };
+
+            SurfaceInfo FindNextSurface(float3 origin, float3 rayDir, bool findNextFluidEntryPoint, float maxDst)
+            {
+                SurfaceInfo info = (SurfaceInfo)0;
+                if (dot(rayDir, rayDir) < 0.5) return info;
+
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+
+                float2 hit = RayBox(bmin, bmax, origin, rayDir);
+                if (hit.y <= 0.0) return info;
+
+                float dstToBox = hit.x;
+
+                // FIX: maxDst — дистанция от origin по лучу
+                float dstThrough = min(hit.y, maxDst - dstToBox);
+                if (dstThrough <= 0.0) return info;
+
+                float stepSize = max(_StepSize, 1e-4);
+
+                float t = TinyNudge;
+                float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
+
+                bool hasExittedFluid = !IsInsideFluid(origin);
+                bool hasEnteredFluid = false;
+                float3 lastPosInFluid = origin + rayDir * (dstToBox + t);
+
+                [loop]
+                for (int i = 0; i < 4096; i++)
+                {
+                    if (t >= tEnd) break;
+
+                    bool isLastStep = (t + stepSize) >= tEnd;
+                    float3 samplePos = origin + rayDir * (dstToBox + t);
+
+                    float f = DensityField(samplePos);
+                    float dens = max(0.0, f);
+                    float thickness = dens * _DensityMultiplier * stepSize;
+                    bool insideFluid = thickness > 0.0;
+
+                    if (insideFluid)
+                    {
+                        hasEnteredFluid = true;
+                        lastPosInFluid = samplePos;
+                        info.densityAlongRay += thickness;
+                    }
+                    else
+                    {
+                        hasExittedFluid = true;
+                    }
+
+                    bool found = false;
+                    if (findNextFluidEntryPoint)
+                    {
+                        found = insideFluid && hasExittedFluid;
+                    }
+                    else
+                    {
+                        found = hasEnteredFluid && (!insideFluid || isLastStep);
+                    }
+
+                    if (found)
+                    {
+                        info.pos = lastPosInFluid;
+                        info.foundSurface = true;
+                        return info;
+                    }
+
+                    t += stepSize;
+                }
+
+                return info;
             }
 
             // ----------------- Helper tile functions -----------------
@@ -226,6 +405,32 @@ Shader "Custom/PBF/RaymarchFluid"
 
                 col = saturate(col);
                 return true;
+            }
+
+            // Возвращает maxDist, ограниченный ближайшим solid (sphere/plane), если он ближе.
+            float ClampMaxDistToSolids(float3 ro, float3 rd, float maxDist)
+            {
+                float tMin = maxDist;
+
+                // sphere (distance only)
+                {
+                    const float3 sphereCenterWS = spherePosition;
+                    const float  R = sphereRadius;
+                    float tS;
+                    if (RaySphereIntersect(ro, rd, sphereCenterWS, R, tS))
+                        tMin = min(tMin, max(0.0, tS - TinyNudge));
+                }
+
+                // rect plane (distance only)
+                {
+                    float tP;
+                    float u, v, u01, v01;
+                    if (RayRectPlaneIntersect(ro, rd, planeCenter, float3(0.0, 1.0, 0.0), planeWidth, planeTileHeight,
+                                           tP, u, v, u01, v01))
+                        tMin = min(tMin, max(0.0, tP - TinyNudge));
+                }
+
+                return tMin;
             }
 
             // visibility: 1 = светло, 0 = тень
@@ -394,13 +599,159 @@ Shader "Custom/PBF/RaymarchFluid"
                 return SampleSky(rd);
             }
 
+            // ----------------- Calculation funstions -----------------
+
+            float CalculateDensityAlongRay(float3 roWorld, float3 rdWorld, float stepSize)
+            {
+                if (dot(rdWorld, rdWorld) < 0.9) return 0.0;
+
+                // NEW: ограничиваем луч ближайшим solid, чтобы volume не считался "за" сферой/плоскостью
+                float maxRayDist = ClampMaxDistToSolids(roWorld, rdWorld, _MaxDistance);
+
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+
+                float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
+                if (hit.y <= 0.0)
+                    return 0.0;
+
+                float step = max(stepSize, 1e-4);
+
+                float dstToBox = hit.x;
+
+                // FIX: max distance по лучу
+                float dstThrough = min(hit.y, maxRayDist - dstToBox);
+                if (dstThrough <= 0.0)
+                    return 0.0;
+
+                float t = TinyNudge;
+                float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
+
+                float accum = 0.0;
+
+                [loop]
+                for (int i = 0; i < 1024; i++)
+                {
+                    if (t >= tEnd) break;
+
+                    float3 p = roWorld + rdWorld * (dstToBox + t);
+
+                    float f = DensityField(p);
+                    float dens = max(0.0, f);
+
+                    accum += dens * _DensityMultiplier * step;
+                    t += step;
+                }
+
+                return accum;
+            }
+
+            // ----------------- Physics: Fresnel / reflection / refraction / transmittance ------------------------------
+
+            struct LightResponse
+            {
+                float3 reflectDir;
+                float3 refractDir;
+                float  reflectWeight;
+                float  refractWeight;
+            };
+            
+            float CalculateReflectance(float3 inDir, float3 normal, float iorA, float iorB)
+            {
+                float refractRatio = iorA / iorB;
+                float cosAngleIn = -dot(inDir, normal);
+                float sinSqrAngleOfRefraction = refractRatio * refractRatio * (1.0 - cosAngleIn * cosAngleIn);
+                if (sinSqrAngleOfRefraction >= 1.0) return 1.0;
+
+                float cosAngleOfRefraction = sqrt(1.0 - sinSqrAngleOfRefraction);
+
+                float rPerp = (iorA * cosAngleIn - iorB * cosAngleOfRefraction) / (iorA * cosAngleIn + iorB * cosAngleOfRefraction);
+                rPerp *= rPerp;
+
+                float rPar = (iorB * cosAngleIn - iorA * cosAngleOfRefraction) / (iorB * cosAngleIn + iorA * cosAngleOfRefraction);
+                rPar *= rPar;
+
+                return (rPerp + rPar) * 0.5;
+            }
+
+            float3 ReflectDir(float3 inDir, float3 normal)
+            {
+                return inDir - 2.0 * dot(inDir, normal) * normal;
+            }
+
+            float3 RefractDir(float3 inDir, float3 normal, float iorA, float iorB)
+            {
+                float refractRatio = iorA / iorB;
+                float cosAngleIn = -dot(inDir, normal);
+                float sinSqrAngleOfRefraction = refractRatio * refractRatio * (1.0 - cosAngleIn * cosAngleIn);
+                if (sinSqrAngleOfRefraction > 1.0) return float3(0,0,0);
+
+                return refractRatio * inDir + (refractRatio * cosAngleIn - sqrt(1.0 - sinSqrAngleOfRefraction)) * normal;
+            }
+
+            LightResponse CalculateReflectionAndRefraction(float3 inDir, float3 normal, float iorA, float iorB)
+            {
+                LightResponse r;
+                r.reflectWeight = CalculateReflectance(inDir, normal, iorA, iorB);
+                r.refractWeight = 1.0 - r.reflectWeight;
+                r.reflectDir = normalize(ReflectDir(inDir, normal));
+                r.refractDir = normalize(RefractDir(inDir, normal, iorA, iorB));
+                return r;
+            }
+
+            float3 Transmittance(float opticalDepth)
+            {
+                float3 ext = max(_ScatteringCoefficients.xyz, 0.0);
+                return exp(-opticalDepth * ext);
+            }
+
             // ----------------- RaymarchFLuid -----------------
 
             float3 RaymarchFluid(float3 ro, float3 rd)
             {
-                float3 col = 0;
-                col += LightWithEnv(rd, ro + rd * TinyNudge);
+                bool travellingThroughFluid = IsInsideFluid(ro);
+                
+                float3 col = 0.0;
 
+                bool searchForNextEntry = !travellingThroughFluid;
+
+                // NEW: ограничиваем поиск поверхности жидкость/воздух ближайшими solid'ами
+                float maxDstThisRay = ClampMaxDistToSolids(ro, rd, _MaxDistance);
+
+                SurfaceInfo s = FindNextSurface(ro, rd, searchForNextEntry, maxDstThisRay);
+                float3 n;
+                
+                if (s.foundSurface)
+                {
+                    n = CalculateNormalWorld(s.pos, rd);
+
+                    float iorA = travellingThroughFluid ? _IOR : iorAir;
+                    float iorB = travellingThroughFluid ? iorAir : _IOR;
+
+                    LightResponse lr = CalculateReflectionAndRefraction(rd, n, iorA, iorB);
+
+                    float densityStep = max(_BounceDensityStepSize, 1e-4);
+
+                    float dRefr = CalculateDensityAlongRay(s.pos + lr.refractDir * TinyNudge, lr.refractDir, densityStep);
+                    float dRefl = CalculateDensityAlongRay(s.pos + lr.reflectDir * TinyNudge, lr.reflectDir, densityStep);
+
+                    bool traceRefr = (dRefr * lr.refractWeight) > (dRefl * lr.reflectWeight);
+
+                    // NEW: LightWithEnv берём из той же точки, что и dRefr/dRefl (с нуджем)
+                    if (traceRefr)
+                        col += LightWithEnv(lr.reflectDir, s.pos + lr.reflectDir * TinyNudge) * Transmittance(dRefl) * lr.reflectWeight;
+                    else
+                        col += LightWithEnv(lr.refractDir, s.pos + lr.refractDir * TinyNudge) * Transmittance(dRefr) * lr.refractWeight;
+
+                    float3 nextDir = traceRefr ? lr.refractDir : lr.reflectDir;
+
+                    ro = s.pos + nextDir * TinyNudge;
+                    rd = nextDir;
+                }
+                
+                float dRem = CalculateDensityAlongRay(ro, rd, max(_BounceDensityStepSize, 1e-4));
+                col += LightWithEnv(rd, ro + rd * TinyNudge) * Transmittance(dRem);
+                
                 return col;
             }
 

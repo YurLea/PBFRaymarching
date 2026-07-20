@@ -435,7 +435,7 @@ MonoBehaviour:
   sim: {fileID: 711951254}
   densityMap: {fileID: 1703057817}
   _shader: {fileID: 4800000, guid: faf8398e842092e40bbc9d9f1ba7804d, type: 3}
-  maxDistance: 50
+  maxDistance: 80
   sun: {fileID: 705507994}
   sunIntensity: 1
   planeCenter: {x: 10, y: -0.05, z: 5}
@@ -450,10 +450,17 @@ MonoBehaviour:
   edgeDarkness: 0.19
   Brightness: 0.34
   hue: 0.31
-  spherePosition: {x: -2.61, y: 1.03, z: 8.63}
+  spherePosition: {x: 5, y: 1.31, z: 5}
   sphereRadius: 0.95
   shadowSoftness: 0.52
   shadowIntensity: 10
+  densityOffset: 39
+  densityMultiplier: 0.003
+  stepSize: 0.02
+  scatteringCoefficients: {x: 5.35, y: 3.07, z: 0.49}
+  normalEps: 0.04
+  indexOfRefraction: 1.333
+  bounceDensityStepSize: 0.02
 --- !u!1 &1703057816
 GameObject:
   m_ObjectHideFlags: 0

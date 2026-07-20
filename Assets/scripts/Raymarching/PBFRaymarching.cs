@@ -39,6 +39,21 @@ public class PBFRaymarch : MonoBehaviour
     [Header("Shadow")] 
     public float shadowSoftness;
     public float shadowIntensity;
+    
+    [Header("Raymarch params")] 
+    public float densityOffset = 25.0f;
+    public float densityMultiplier = 0.0045f;
+    public float stepSize = 0.03f;
+    
+    [Header("Medium / Extinction")]
+    public Vector3 scatteringCoefficients = new Vector3(1f, 1f, 1f); // в новом шейдере это extinctionCoeff
+    
+    [Header("eps gradient")]
+    public float normalEps = 0.005f;
+    
+    [Header("IOR")]
+    public float indexOfRefraction = 1.333f; // вода ~1.333
+    public float bounceDensityStepSize = 0.15f;
 
     private Camera _cam;
     private Material _raymarchMat;
@@ -180,6 +195,27 @@ public class PBFRaymarch : MonoBehaviour
         // Параметры тени тестовой сферы
         _raymarchMat.SetFloat("shadowSoftness", shadowSoftness);
         _raymarchMat.SetFloat("shadowIntensity", shadowIntensity);
+        
+        // Bounds
+        Vector3 bmin = sim.boxMin;
+        Vector3 bsize = sim.boxMax - sim.boxMin;
+        _raymarchMat.SetVector("_BoundsMin", new Vector4(bmin.x, bmin.y, bmin.z, 0));
+        _raymarchMat.SetVector("_BoundsSize", new Vector4(bsize.x, bsize.y, bsize.z, 0));
+        
+        _raymarchMat.SetFloat("_DensityOffset", densityOffset);
+        _raymarchMat.SetFloat("_DensityMultiplier", densityMultiplier);
+        _raymarchMat.SetFloat("_StepSize", stepSize);
+        
+        // Extinction (в шейдере используется как extinctionCoeff через Transmittance())
+        _raymarchMat.SetVector("_ScatteringCoefficients",
+            new Vector4(scatteringCoefficients.x, scatteringCoefficients.y, scatteringCoefficients.z, 0));
+        
+        // Normal epsilon
+        _raymarchMat.SetFloat("_NormalEps", normalEps);
+
+        // IOR
+        _raymarchMat.SetFloat("_IOR", indexOfRefraction);
+        _raymarchMat.SetFloat("_BounceDensityStepSize", Mathf.Max(1e-4f, bounceDensityStepSize));
     }
 
     /// <summary>
