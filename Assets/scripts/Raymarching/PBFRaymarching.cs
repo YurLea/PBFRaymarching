@@ -32,9 +32,13 @@ public class PBFRaymarch : MonoBehaviour
     public float Brightness;
     public float hue;
 
-    [Header("Plane")] 
+    [Header("Sphere")] 
     public Vector3 spherePosition;
     public float sphereRadius;
+    
+    [Header("Shadow")] 
+    public float shadowSoftness;
+    public float shadowIntensity;
 
     private Camera _cam;
     private Material _raymarchMat;
@@ -172,6 +176,10 @@ public class PBFRaymarch : MonoBehaviour
         // Параметры тестовой сферы
         _raymarchMat.SetVector("spherePosition", spherePosition);
         _raymarchMat.SetFloat("sphereRadius", sphereRadius);
+        
+        // Параметры тени тестовой сферы
+        _raymarchMat.SetFloat("shadowSoftness", shadowSoftness);
+        _raymarchMat.SetFloat("shadowIntensity", shadowIntensity);
     }
 
     /// <summary>
