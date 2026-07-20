@@ -39,6 +39,7 @@ public class PBFRaymarch : MonoBehaviour
     [Header("Shadow")] 
     public float shadowSoftness;
     public float shadowIntensity;
+    public float waterShadowIntensity;
     
     [Header("Raymarch params")] 
     public float densityOffset = 25.0f;
@@ -216,6 +217,8 @@ public class PBFRaymarch : MonoBehaviour
         // IOR
         _raymarchMat.SetFloat("_IOR", indexOfRefraction);
         _raymarchMat.SetFloat("_BounceDensityStepSize", Mathf.Max(1e-4f, bounceDensityStepSize));
+        
+        _raymarchMat.SetFloat("waterShadowIntensity", waterShadowIntensity);
     }
 
     /// <summary>

@@ -72,6 +72,8 @@ Shader "Custom/PBF/RaymarchFluid"
 
             float _NormalEps;
 
+            float waterShadowIntensity;
+
             struct appdata
             {
                 float4 vertex : POSITION;
@@ -395,7 +397,7 @@ Shader "Custom/PBF/RaymarchFluid"
                 float3 L = normalize(dirToSun);
                 float ndotl = saturate(dot(N, L));
 
-                const float ambient = 0.18;
+                const float ambient = 0.06;
                 col = sphereColor * (ambient + (1.0 - ambient) * ndotl);
 
                 float3 V = normalize(-rd);
@@ -425,12 +427,59 @@ Shader "Custom/PBF/RaymarchFluid"
                 {
                     float tP;
                     float u, v, u01, v01;
-                    if (RayRectPlaneIntersect(ro, rd, planeCenter, float3(0.0, 1.0, 0.0), planeWidth, planeTileHeight,
+                    if (RayRectPlaneIntersect(ro, rd, planeCenter, float3(0.0, 1.0, 0.0), planeWidth, planeHeight,
                                            tP, u, v, u01, v01))
                         tMin = min(tMin, max(0.0, tP - TinyNudge));
                 }
 
                 return tMin;
+            }
+
+            // ----------------- Calculation funstions -----------------
+
+            float CalculateDensityAlongRay(float3 roWorld, float3 rdWorld, float stepSize)
+            {
+                if (dot(rdWorld, rdWorld) < 0.9) return 0.0;
+
+                // NEW: ограничиваем луч ближайшим solid, чтобы volume не считался "за" сферой/плоскостью
+                float maxRayDist = ClampMaxDistToSolids(roWorld, rdWorld, _MaxDistance);
+
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+
+                float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
+                if (hit.y <= 0.0)
+                    return 0.0;
+
+                float step = max(stepSize, 1e-4);
+
+                float dstToBox = hit.x;
+
+                // FIX: max distance по лучу
+                float dstThrough = min(hit.y, maxRayDist - dstToBox);
+                if (dstThrough <= 0.0)
+                    return 0.0;
+
+                float t = TinyNudge;
+                float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
+
+                float accum = 0.0;
+
+                [loop]
+                for (int i = 0; i < 1024; i++)
+                {
+                    if (t >= tEnd) break;
+
+                    float3 p = roWorld + rdWorld * (dstToBox + t);
+
+                    float f = DensityField(p);
+                    float dens = max(0.0, f);
+
+                    accum += dens * _DensityMultiplier * step;
+                    t += step;
+                }
+
+                return accum;
             }
 
             // visibility: 1 = светло, 0 = тень
@@ -460,6 +509,49 @@ Shader "Custom/PBF/RaymarchFluid"
 
                 // 0 в тени, 1 на свету, плавный переход в зоне [0..s] за границей
                 return smoothstep(0.0, s, edge);
+            }
+
+            float3 WaterShadowTransmittance(float3 p, float3 dirToSun)
+            {
+                float3 rd = normalize(dirToSun);
+
+                // пересекаем shadow-ray с AABB объёма (где вообще есть densityMap)
+                float3 bmin = _BoundsMin.xyz;
+                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
+
+                float2 hit = RayBox(bmin, bmax, p, rd);
+                if (hit.y <= 0.0)
+                    return 1.0; // луч не проходит через bounds => воды на пути нет
+
+                float tEnter = hit.x;
+                float tExit  = hit.x + hit.y;
+
+                float step = max(_BounceDensityStepSize, 1e-4);
+
+                float opticalDepth = 0.0;
+
+                // маленький сдвиг чтобы не словить самопересечения/границу
+                float t = tEnter + TinyNudge;
+
+                [loop]
+                for (int i = 0; i < 2048; i++)
+                {
+                    if (t >= tExit) break;
+
+                    float3 x = p + rd * t;
+
+                    // density field уже включает _DensityOffset; берём только "внутри жидкости"
+                    float dens = max(0.0, DensityField(x));
+
+                    // накапливаем оптическую толщу
+                    opticalDepth += dens * _DensityMultiplier * step;
+
+                    t += step;
+                }
+
+                // затухание (ВАЖНО: минус!)
+                float3 ext = max(_ScatteringCoefficients.xyz, 0.0);
+                return exp(-opticalDepth * ext * waterShadowIntensity);
             }
 
             // 2) Обертка "plane rect: color + hitInfo":
@@ -556,6 +648,17 @@ Shader "Custom/PBF/RaymarchFluid"
                 {
                     col *= pow(0.99, shadowIntensity);
                 }
+
+                // тень от воды
+                float3 T = WaterShadowTransmittance(hitPlane, dirToSun);
+
+                // shadowIntensity: 0..1 (0 = без тени, 1 = полная)
+                float3 shadowMul = lerp(1.0, T, shadowIntensity);
+
+                // если нужен “пол” (ambient), чтобы не уходить в полный чёрный:
+                shadowMul = max(shadowMul, 0.1);
+
+                col *= shadowMul;
                 
                 return true;
             }
@@ -597,53 +700,6 @@ Shader "Custom/PBF/RaymarchFluid"
 
                 if (hit) return nearestColor;
                 return SampleSky(rd);
-            }
-
-            // ----------------- Calculation funstions -----------------
-
-            float CalculateDensityAlongRay(float3 roWorld, float3 rdWorld, float stepSize)
-            {
-                if (dot(rdWorld, rdWorld) < 0.9) return 0.0;
-
-                // NEW: ограничиваем луч ближайшим solid, чтобы volume не считался "за" сферой/плоскостью
-                float maxRayDist = ClampMaxDistToSolids(roWorld, rdWorld, _MaxDistance);
-
-                float3 bmin = _BoundsMin.xyz;
-                float3 bmax = _BoundsMin.xyz + _BoundsSize.xyz;
-
-                float2 hit = RayBox(bmin, bmax, roWorld, rdWorld);
-                if (hit.y <= 0.0)
-                    return 0.0;
-
-                float step = max(stepSize, 1e-4);
-
-                float dstToBox = hit.x;
-
-                // FIX: max distance по лучу
-                float dstThrough = min(hit.y, maxRayDist - dstToBox);
-                if (dstThrough <= 0.0)
-                    return 0.0;
-
-                float t = TinyNudge;
-                float tEnd = max(0.0, dstThrough - TinyNudge * 2.0);
-
-                float accum = 0.0;
-
-                [loop]
-                for (int i = 0; i < 1024; i++)
-                {
-                    if (t >= tEnd) break;
-
-                    float3 p = roWorld + rdWorld * (dstToBox + t);
-
-                    float f = DensityField(p);
-                    float dens = max(0.0, f);
-
-                    accum += dens * _DensityMultiplier * step;
-                    t += step;
-                }
-
-                return accum;
             }
 
             // ----------------- Physics: Fresnel / reflection / refraction / transmittance ------------------------------
@@ -719,11 +775,10 @@ Shader "Custom/PBF/RaymarchFluid"
                 float maxDstThisRay = ClampMaxDistToSolids(ro, rd, _MaxDistance);
 
                 SurfaceInfo s = FindNextSurface(ro, rd, searchForNextEntry, maxDstThisRay);
-                float3 n;
                 
                 if (s.foundSurface)
                 {
-                    n = CalculateNormalWorld(s.pos, rd);
+                    float3 n = CalculateNormalWorld(s.pos, rd);
 
                     float iorA = travellingThroughFluid ? _IOR : iorAir;
                     float iorB = travellingThroughFluid ? iorAir : _IOR;
@@ -739,9 +794,9 @@ Shader "Custom/PBF/RaymarchFluid"
 
                     // NEW: LightWithEnv берём из той же точки, что и dRefr/dRefl (с нуджем)
                     if (traceRefr)
-                        col += LightWithEnv(lr.reflectDir, s.pos + lr.reflectDir * TinyNudge) * Transmittance(dRefl) * lr.reflectWeight;
-                    else
                         col += LightWithEnv(lr.refractDir, s.pos + lr.refractDir * TinyNudge) * Transmittance(dRefr) * lr.refractWeight;
+                    else
+                        col += LightWithEnv(lr.reflectDir, s.pos + lr.reflectDir * TinyNudge) * Transmittance(dRefl) * lr.reflectWeight;
 
                     float3 nextDir = traceRefr ? lr.refractDir : lr.reflectDir;
 
