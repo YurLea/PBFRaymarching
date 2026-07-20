@@ -454,7 +454,7 @@ MonoBehaviour:
   sphereRadius: 0.95
   shadowSoftness: 0.52
   shadowIntensity: 10
-  waterShadowIntensity: 0.027
+  waterShadowIntensity: 0.04
   densityOffset: 39
   densityMultiplier: 0.002
   stepSize: 0.06
