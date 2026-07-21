@@ -115,7 +115,7 @@ public class PBFSim : MonoBehaviour
         // Init particles (строго как в JS)
         var particles = new ParticleData[N];
 
-        Vector3 start = boxMin + new Vector3(particleRadius + 0.1f, particleRadius + 0.1f, particleRadius + 0.1f);
+        Vector3 start = boxMin + new Vector3(particleRadius + boxMax.x / 2, particleRadius + 0.1f, particleRadius + 0.1f);
 
         for (int i = 0; i < N; i++)
         {
