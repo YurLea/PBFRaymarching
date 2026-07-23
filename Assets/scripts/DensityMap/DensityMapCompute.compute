@@ -3,8 +3,9 @@
 #pragma kernel FinalizeDensityVolume
 
 #define THREADS 256
+
 static const float PI = 3.1415926535;
-static const int PAD = 1; // 1 или 2 обычно хватает
+static const int PAD = 1;
 
 struct ParticleData
 {
@@ -12,25 +13,30 @@ struct ParticleData
     float4 predicted;
     float4 velocity;
     float4 delta;
+
+    // ВАЖНО:
+    // Это поле есть в PBFSim.ParticleData.
+    // Без него layout StructuredBuffer не совпадает.
+    float4 rest;
+
     float density;
     float lambda;
-    float pad0;
-    float pad1;
+    float invMass;
+    float type; // 0 = fluid, 1 = solid
 };
 
 StructuredBuffer<ParticleData> Particles;
 RWStructuredBuffer<uint> DensityAccum;
 RWTexture3D<float4> DensityMap;
 
-// uniforms (как в JS)
 int N;
 int volumeResolutionX;
 int volumeResolutionY;
 int volumeResolutionZ;
 
-float4 boundsMin;   // xyz
-float4 boundsSize;  // xyz
-float4 voxelSize;   // xyz
+float4 boundsMin;
+float4 boundsSize;
+float4 voxelSize;
 
 float h;
 float particleMass;
@@ -45,12 +51,14 @@ float W_poly6_dist2(float dist2)
 {
     float h2 = h * h;
     float x = h2 - dist2;
-    if (x <= 0.0) return 0.0;
 
-    // coeff = 315 / (64*pi*h^9)
+    if (x <= 0.0)
+        return 0.0;
+
     float h3 = h2 * h;
     float h6 = h3 * h3;
     float h9 = h6 * h3;
+
     float coeff = 315.0 / (64.0 * PI * h9);
 
     return coeff * x * x * x;
@@ -60,25 +68,37 @@ float W_poly6_dist2(float dist2)
 void ClearDensityVolume(uint3 id : SV_DispatchThreadID)
 {
     uint total = (uint)(volumeResolutionX * volumeResolutionY * volumeResolutionZ);
-    if (id.x >= total) return;
+
+    if (id.x >= total)
+        return;
+
     DensityAccum[id.x] = 0u;
 }
 
 [numthreads(THREADS, 1, 1)]
 void SplatParticlesToDensity(uint3 id : SV_DispatchThreadID)
 {
-    if ((int)id.x >= N) return;
+    if ((int)id.x >= N)
+        return;
 
-    float3 p = Particles[id.x].position.xyz; // как в JS
+    ParticleData particle = Particles[id.x];
+
+    // Дополнительная защита.
+    // Если вдруг N снова будет равен totalParticleCount,
+    // solid-частицы всё равно не попадут в density volume.
+    if (particle.type > 0.5)
+        return;
+
+    float3 p = particle.position.xyz;
     float h2 = h * h;
 
     int3 res = int3(volumeResolutionX, volumeResolutionY, volumeResolutionZ);
 
     int3 minV = (int3)floor((p - h.xxx - boundsMin.xyz) / voxelSize.xyz);
-    int3 maxV = (int3)ceil ((p + h.xxx - boundsMin.xyz) / voxelSize.xyz);
+    int3 maxV = (int3)ceil((p + h.xxx - boundsMin.xyz) / voxelSize.xyz);
 
     minV = max(minV, int3(PAD, PAD, PAD));
-    maxV = min(maxV, res - int3(1 + PAD, 1 + PAD, 1 + PAD)); // т.к. maxV inclusive
+    maxV = min(maxV, res - int3(1 + PAD, 1 + PAD, 1 + PAD));
 
     for (int z = minV.z; z <= maxV.z; z++)
     {
@@ -90,13 +110,16 @@ void SplatParticlesToDensity(uint3 id : SV_DispatchThreadID)
                 float3 d = cellCenter - p;
                 float dist2 = dot(d, d);
 
-                if (dist2 >= h2) continue;
+                if (dist2 >= h2)
+                    continue;
 
                 float contribution = particleMass * W_poly6_dist2(dist2);
 
                 float addF = round(max(0.0, contribution) * densityStorageScale);
                 uint add = (uint)addF;
-                if (add == 0u) continue;
+
+                if (add == 0u)
+                    continue;
 
                 uint idx = FlatIndex(x, y, z);
 
@@ -111,26 +134,27 @@ void SplatParticlesToDensity(uint3 id : SV_DispatchThreadID)
 void FinalizeDensityVolume(uint3 id : SV_DispatchThreadID)
 {
     uint total = (uint)(volumeResolutionX * volumeResolutionY * volumeResolutionZ);
-    if (id.x >= total) return;
+
+    if (id.x >= total)
+        return;
 
     int x = (int)(id.x % (uint)volumeResolutionX);
     int y = (int)((id.x / (uint)volumeResolutionX) % (uint)volumeResolutionY);
     int z = (int)(id.x / (uint)(volumeResolutionX * volumeResolutionY));
+
     int3 c = int3(x, y, z);
+    int3 res = int3(volumeResolutionX, volumeResolutionY, volumeResolutionZ);
+
+    if (x < PAD || y < PAD || z < PAD ||
+        x >= res.x - PAD || y >= res.y - PAD || z >= res.z - PAD)
+    {
+        DensityMap[int3(x, y, z)] = float4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
 
     float sum = 0.0;
     float wsum = 0.0;
 
-    int3 res = int3(volumeResolutionX, volumeResolutionY, volumeResolutionZ);
-
-    if (x < PAD || y < PAD || z < PAD ||
-    x >= res.x - PAD || y >= res.y - PAD || z >= res.z - PAD)
-    {
-        DensityMap[int3(x,y,z)] = float4(0.0, 0.0, 0.0, 1.0);
-        return;
-    }
-
-    // 3x3x3 smoothing kernel, weights: (dx==0?2:1)*(dy==0?2:1)*(dz==0?2:1)
     for (int dz = -1; dz <= 1; dz++)
     {
         for (int dy = -1; dy <= 1; dy++)
@@ -139,12 +163,16 @@ void FinalizeDensityVolume(uint3 id : SV_DispatchThreadID)
             {
                 int3 n = c + int3(dx, dy, dz);
 
-                if (n.x < 0 || n.y < 0 || n.z < 0 || n.x >= res.x || n.y >= res.y || n.z >= res.z)
+                if (n.x < 0 || n.y < 0 || n.z < 0 ||
+                    n.x >= res.x || n.y >= res.y || n.z >= res.z)
+                {
                     continue;
+                }
 
-                float wx = (dx == 0) ? 2.0 : 1.0;
-                float wy = (dy == 0) ? 2.0 : 1.0;
-                float wz = (dz == 0) ? 2.0 : 1.0;
+                float wx = dx == 0 ? 2.0 : 1.0;
+                float wy = dy == 0 ? 2.0 : 1.0;
+                float wz = dz == 0 ? 2.0 : 1.0;
+
                 float w = wx * wy * wz;
 
                 uint vU = DensityAccum[FlatIndex(n.x, n.y, n.z)];
@@ -161,3 +189,4 @@ void FinalizeDensityVolume(uint3 id : SV_DispatchThreadID)
 
     DensityMap[int3(x, y, z)] = float4(density, 0.0, 0.0, 1.0);
 }
+

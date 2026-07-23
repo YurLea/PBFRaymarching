@@ -4,7 +4,9 @@
 #pragma kernel FindNeighbors
 #pragma kernel ComputeLambda
 #pragma kernel ComputeDeltaP
+#pragma kernel SolveContactDeltas
 #pragma kernel ApplyDeltaAndCollide
+#pragma kernel ShapeMatchRigidSphere
 #pragma kernel UpdateVelocityFinalize
 #pragma kernel ApplyXSPHViscosity
 
@@ -20,21 +22,27 @@ struct ParticleData
     float4 predicted;
     float4 velocity;
     float4 delta;
+
+    // rigid local rest offset
+    float4 rest;
+
     float density;
     float lambda;
-    float pad0;
-    float pad1;
+    float invMass;
+    float type; // 0 = fluid, 1 = solid
 };
 
 RWStructuredBuffer<ParticleData> Particles;
-RWStructuredBuffer<uint> GridIndices;        // size = gridTotalCells * MAX_PER_CELL
-RWStructuredBuffer<uint> GridCounters;       // size = gridTotalCells
-RWStructuredBuffer<uint> Neighbors;          // size = N * MAX_NEIGHBORS
-RWStructuredBuffer<uint> NeighborCounters;   // size = N
+RWStructuredBuffer<uint> GridIndices;
+RWStructuredBuffer<uint> GridCounters;
+RWStructuredBuffer<uint> Neighbors;
+RWStructuredBuffer<uint> NeighborCounters;
 
-// Params (Unity положит в constant buffer)
-int   N;
-int   gridTotalCells;
+int N;
+int fluidCount;
+int rigidStart;
+int rigidCount;
+int gridTotalCells;
 
 float dt;
 float h;
@@ -50,14 +58,25 @@ float xsphC;
 float particleRadius;
 float damp;
 
-float4 gravity;      // xyz
-float4 boxMin;       // xyz
-float4 boxMax;       // xyz
-float4 gridCellSize; // xyz
-int4   gridResolution; // xyz
+float solidDensityScale;
+float shapeMatchingStiffness;
+float contactSOR;
 
-float3 spherePosition;
-float sphereRadius;
+float4 gravity;
+float4 boxMin;
+float4 boxMax;
+float4 gridCellSize;
+int4 gridResolution;
+
+bool IsFluid(ParticleData p)
+{
+    return p.type < 0.5;
+}
+
+bool IsSolid(ParticleData p)
+{
+    return p.type >= 0.5;
+}
 
 float W_poly6(float r)
 {
@@ -66,7 +85,6 @@ float W_poly6(float r)
     float h2 = h * h;
     float hr2 = h2 - r * r;
 
-    // h^9 = h^6 * h^3
     float h3 = h2 * h;
     float h6 = h3 * h3;
     float h9 = h6 * h3;
@@ -77,17 +95,17 @@ float W_poly6(float r)
 
 float3 gradW_spiky(float3 rij, float rIn)
 {
-    if (rIn >= h) return float3(0,0,0);
+    if (rIn >= h) return float3(0, 0, 0);
 
     float r = max(rIn, 1e-4);
 
-    // h^6
     float h2 = h * h;
     float h3 = h2 * h;
     float h6 = h3 * h3;
 
     float coeff = -45.0 / (PI * h6);
-    float t = (h - r);
+    float t = h - r;
+
     return coeff * t * t * (rij / r);
 }
 
@@ -104,33 +122,52 @@ int CellToIndex(int3 c)
     return c.x + c.y * rx + c.z * rx * ry;
 }
 
-[numthreads(THREADS,1,1)]
+float3 ClampToBox(float3 p)
+{
+    float3 radius = float3(particleRadius, particleRadius, particleRadius);
+    float3 minB = boxMin.xyz + radius;
+    float3 maxB = boxMax.xyz - radius;
+    return clamp(p, minB, maxB);
+}
+
+[numthreads(THREADS, 1, 1)]
 void ClearGridCounters(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= gridTotalCells) return;
     GridCounters[id.x] = 0u;
 }
 
-[numthreads(THREADS,1,1)]
+[numthreads(THREADS, 1, 1)]
 void ApplyForcesPredict(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData p = Particles[id.x];
-    p.velocity.xyz = p.velocity.xyz + gravity.xyz * dt;
-    p.predicted.xyz = p.position.xyz + p.velocity.xyz * dt;
+
+    if (p.invMass > 0.0)
+    {
+        p.velocity.xyz += gravity.xyz * dt;
+        p.predicted.xyz = p.position.xyz + p.velocity.xyz * dt;
+    }
+    else
+    {
+        p.predicted.xyz = p.position.xyz;
+    }
+
     p.velocity.w = 0;
     p.predicted.w = 0;
+    p.delta = float4(0, 0, 0, 0);
 
     Particles[id.x] = p;
 }
 
-[numthreads(THREADS,1,1)]
+[numthreads(THREADS, 1, 1)]
 void BuildGrid(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData p = Particles[id.x];
+
     int3 res = gridResolution.xyz;
     int3 cell = PosToCell(p.predicted.xyz);
 
@@ -154,17 +191,19 @@ void BuildGrid(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[numthreads(THREADS,1,1)]
+[numthreads(THREADS, 1, 1)]
 void FindNeighbors(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData p = Particles[id.x];
+
     int3 res = gridResolution.xyz;
     int3 cell_i = PosToCell(p.predicted.xyz);
 
     uint count = 0u;
     uint startIndex = id.x * (uint)MAX_NEIGHBORS;
+
     NeighborCounters[id.x] = 0u;
 
     [loop]
@@ -185,8 +224,8 @@ void FindNeighbors(uint3 id : SV_DispatchThreadID)
 
                 int ciI = CellToIndex(c);
                 if (ciI < 0) continue;
-                uint ci = (uint)ciI;
 
+                uint ci = (uint)ciI;
                 uint pc = GridCounters[ci];
                 uint baseIdx = ci * (uint)MAX_PER_CELL;
 
@@ -194,16 +233,19 @@ void FindNeighbors(uint3 id : SV_DispatchThreadID)
                 while (k < pc && k < (uint)MAX_PER_CELL)
                 {
                     uint j = GridIndices[baseIdx + k];
+
                     if (j != id.x)
                     {
                         ParticleData pj = Particles[j];
                         float r = distance(p.predicted.xyz, pj.predicted.xyz);
+
                         if (r < h && count < (uint)MAX_NEIGHBORS)
                         {
                             Neighbors[startIndex + count] = j;
                             count++;
                         }
                     }
+
                     k++;
                 }
             }
@@ -213,12 +255,21 @@ void FindNeighbors(uint3 id : SV_DispatchThreadID)
     NeighborCounters[id.x] = count;
 }
 
-[numthreads(THREADS,1,1)]
+[numthreads(THREADS, 1, 1)]
 void ComputeLambda(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData pi = Particles[id.x];
+
+    if (!IsFluid(pi))
+    {
+        pi.density = 0.0;
+        pi.lambda = 0.0;
+        Particles[id.x] = pi;
+        return;
+    }
+
     uint count = NeighborCounters[id.x];
     uint start = id.x * (uint)MAX_NEIGHBORS;
 
@@ -228,14 +279,22 @@ void ComputeLambda(uint3 id : SV_DispatchThreadID)
     {
         uint j = Neighbors[start + n];
         ParticleData pj = Particles[j];
+
         float r = distance(pi.predicted.xyz, pj.predicted.xyz);
-        rho += particleMass * W_poly6(r);
+
+        if (IsFluid(pj))
+            rho += particleMass * W_poly6(r);
+        else
+            rho += particleMass * solidDensityScale * W_poly6(r);
     }
 
     pi.density = rho;
+
+    // Классический PBF density constraint.
+    // Не clamp'им через max(..., 0), иначе жидкость становится слишком рыхлой.
     float Ci = rho / restDensity - 1.0;
 
-    float3 grad_i = float3(0,0,0);
+    float3 grad_i = float3(0, 0, 0);
     float sumGrad2 = 0.0;
 
     for (uint n2 = 0u; n2 < count; n2++)
@@ -245,30 +304,43 @@ void ComputeLambda(uint3 id : SV_DispatchThreadID)
 
         float3 rij = pi.predicted.xyz - pj2.predicted.xyz;
         float r = length(rij);
+
+        if (r >= h) continue;
+
         float3 gradW = gradW_spiky(rij, r);
 
-        float3 grad_ij = (particleMass / restDensity) * gradW;
+        float scale = IsFluid(pj2) ? 1.0 : solidDensityScale;
+        float3 grad_ij = (particleMass * scale / restDensity) * gradW;
 
         grad_i += grad_ij;
         sumGrad2 += dot(grad_ij, grad_ij);
     }
 
     sumGrad2 += dot(grad_i, grad_i);
+
     pi.lambda = -Ci / (sumGrad2 + lambdaEps);
 
     Particles[id.x] = pi;
 }
 
-[numthreads(THREADS,1,1)]
+[numthreads(THREADS, 1, 1)]
 void ComputeDeltaP(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData pi = Particles[id.x];
+
+    if (!IsFluid(pi))
+    {
+        pi.delta = float4(0, 0, 0, 0);
+        Particles[id.x] = pi;
+        return;
+    }
+
     uint count = NeighborCounters[id.x];
     uint start = id.x * (uint)MAX_NEIGHBORS;
 
-    float3 dp = float3(0,0,0);
+    float3 dp = float3(0, 0, 0);
 
     float Wdq = W_poly6(corrDeltaQ * h);
     Wdq = max(Wdq, 1e-6);
@@ -280,6 +352,7 @@ void ComputeDeltaP(uint3 id : SV_DispatchThreadID)
 
         float3 rij = pi.predicted.xyz - pj.predicted.xyz;
         float r = length(rij);
+
         if (r <= 0.0 || r >= h) continue;
 
         float3 gradW = gradW_spiky(rij, r);
@@ -287,132 +360,336 @@ void ComputeDeltaP(uint3 id : SV_DispatchThreadID)
         float Wr = W_poly6(r);
         float scorr = -corrK * pow(Wr / Wdq, corrN);
 
-        dp += (pi.lambda + pj.lambda + scorr) * gradW;
+        float lambdaJ = IsFluid(pj) ? pj.lambda : 0.0;
+        float scale = IsFluid(pj) ? 1.0 : solidDensityScale;
+
+        dp += (pi.lambda + lambdaJ + scorr) * scale * gradW;
     }
 
-    dp *= (particleMass / restDensity);
+    dp *= particleMass / restDensity;
 
     float maxDelta = 0.1 * h;
     float lenDp = length(dp);
-    if (lenDp > maxDelta)
-        dp *= (maxDelta / lenDp);
 
-    pi.delta = float4(dp, 0);
+    if (lenDp > maxDelta)
+        dp *= maxDelta / lenDp;
+
+    // Важно:
+    // delta.xyz = PBF pressure correction.
+    // delta.w больше не используется как счетчик.
+    pi.delta = float4(dp, 0.0);
+
     Particles[id.x] = pi;
 }
 
-[numthreads(THREADS,1,1)]
+[numthreads(THREADS, 1, 1)]
+void SolveContactDeltas(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= N) return;
+
+    ParticleData pi = Particles[id.x];
+
+    uint count = NeighborCounters[id.x];
+    uint start = id.x * (uint)MAX_NEIGHBORS;
+
+    // Важно:
+    // НЕ обнуляем pi.delta.xyz.
+    // Там может лежать PBF pressure correction из ComputeDeltaP.
+    float3 totalDelta = pi.delta.xyz;
+
+    float3 contactDeltaSum = float3(0, 0, 0);
+    float constraintCount = 0.0;
+
+    float contactDist = particleRadius * 2.0;
+
+    for (uint n = 0u; n < count; n++)
+    {
+        uint j = Neighbors[start + n];
+        ParticleData pj = Particles[j];
+
+        bool iFluid = IsFluid(pi);
+        bool jFluid = IsFluid(pj);
+        bool iSolid = !iFluid;
+        bool jSolid = !jFluid;
+
+        // Fluid-fluid контакт не нужен: его держит density constraint.
+        if (iFluid && jFluid)
+            continue;
+
+        // Частицы одного rigid body не сталкиваются между собой.
+        // Сейчас rigid body один. Для нескольких нужен bodyId.
+        if (iSolid && jSolid)
+            continue;
+
+        float3 xij = pi.predicted.xyz - pj.predicted.xyz;
+        float dist = length(xij);
+
+        if (dist <= 1e-6 || dist >= contactDist)
+            continue;
+
+        float3 normal = xij / dist;
+        float penetration = contactDist - dist;
+
+        float wi = pi.invMass;
+        float wj = pj.invMass;
+        float wsum = wi + wj;
+
+        if (wsum <= 1e-8)
+            continue;
+
+        // Jacobi-style local correction for particle i.
+        float3 corr = normal * penetration * (wi / wsum);
+
+        contactDeltaSum += corr;
+        constraintCount += 1.0;
+    }
+
+    if (constraintCount > 0.0)
+    {
+        float3 contactDelta = contactDeltaSum / constraintCount;
+
+        float maxContactDelta = 0.5 * particleRadius;
+        float lenContactDelta = length(contactDelta);
+
+        if (lenContactDelta > maxContactDelta)
+            contactDelta *= maxContactDelta / lenContactDelta;
+
+        // contactSOR влияет только на contact, не на PBF pressure.
+        totalDelta += contactSOR * contactDelta;
+    }
+
+    pi.delta = float4(totalDelta, 0.0);
+
+    Particles[id.x] = pi;
+}
+
+[numthreads(THREADS, 1, 1)]
 void ApplyDeltaAndCollide(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData p = Particles[id.x];
 
-    p.predicted.xyz = p.predicted.xyz + p.delta.xyz;
-    p.delta = float4(0,0,0,0);
+    // delta.xyz уже содержит сумму:
+    // PBF pressure correction + contact correction.
+    p.predicted.xyz += p.delta.xyz;
+    p.delta = float4(0, 0, 0, 0);
 
-    float3 minB = boxMin.xyz + particleRadius.xxx;
-    float3 maxB = boxMax.xyz - particleRadius.xxx;
-    p.predicted.xyz = clamp(p.predicted.xyz, minB, maxB);
+    // Box contact as positional projection.
+    p.predicted.xyz = ClampToBox(p.predicted.xyz);
 
     Particles[id.x] = p;
 }
 
-float sdSphere(float3 p, float s)
+// ------------------------------------------------------------
+// Rigid shape matching for one rigid sphere.
+// target_i = c + Q * r_i
+// ------------------------------------------------------------
+
+float Det3(float3x3 m)
 {
-    return length(p) - s;
+    return
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+        m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+        m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
 }
 
-float distanceField(float3 p)
+float3x3 Inv3(float3x3 m)
 {
-    // расширяем сферу на радиус частицы
-    return sdSphere(p - spherePosition, sphereRadius + particleRadius);
+    float det = Det3(m);
+
+    if (abs(det) < 1e-8)
+    {
+        return float3x3(
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1
+        );
+    }
+
+    float invDet = 1.0 / det;
+
+    float3x3 r;
+
+    r[0][0] =  (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * invDet;
+    r[0][1] = -(m[0][1] * m[2][2] - m[0][2] * m[2][1]) * invDet;
+    r[0][2] =  (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * invDet;
+
+    r[1][0] = -(m[1][0] * m[2][2] - m[1][2] * m[2][0]) * invDet;
+    r[1][1] =  (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * invDet;
+    r[1][2] = -(m[0][0] * m[1][2] - m[0][2] * m[1][0]) * invDet;
+
+    r[2][0] =  (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * invDet;
+    r[2][1] = -(m[0][0] * m[2][1] - m[0][1] * m[2][0]) * invDet;
+    r[2][2] =  (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * invDet;
+
+    return r;
 }
 
-float3 getNormal(float3 p)
+float3 MulMatVec(float3x3 m, float3 v)
 {
-    // 0.001 может быть слишком мало/много в зависимости от масштаба сцены
-    float eps = max(0.001, particleRadius * 0.25);
-
-    float3 ex = float3(eps, 0, 0);
-    float3 ey = float3(0, eps, 0);
-    float3 ez = float3(0, 0, eps);
-
-    float3 n = float3(
-        distanceField(p + ex) - distanceField(p - ex),
-        distanceField(p + ey) - distanceField(p - ey),
-        distanceField(p + ez) - distanceField(p - ez)
+    return float3(
+        m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z,
+        m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z,
+        m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z
     );
-    return normalize(n);
 }
 
-[numthreads(THREADS,1,1)]
+float3x3 Identity3()
+{
+    return float3x3(
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1
+    );
+}
+
+float3x3 PolarRotation(float3x3 A)
+{
+    // Newton iteration for polar decomposition.
+    // R_{k+1} = 0.5 * (R_k + inverse(transpose(R_k)))
+    float3x3 R = A;
+
+    if (abs(Det3(R)) < 1e-8)
+        return Identity3();
+
+    [unroll]
+    for (int i = 0; i < 8; i++)
+    {
+        float3x3 invR = Inv3(R);
+        float3x3 invRT = transpose(invR);
+        R = 0.5 * (R + invRT);
+    }
+
+    return R;
+}
+
+[numthreads(1, 1, 1)]
+void ShapeMatchRigidSphere(uint3 id : SV_DispatchThreadID)
+{
+    if (rigidCount <= 0) return;
+
+    float totalMass = 0.0;
+    float3 c = float3(0, 0, 0);
+
+    // Current center of mass.
+    for (int k = 0; k < rigidCount; k++)
+    {
+        int idx = rigidStart + k;
+        ParticleData p = Particles[idx];
+
+        float m = p.invMass > 0.0 ? 1.0 / p.invMass : 0.0;
+
+        c += p.predicted.xyz * m;
+        totalMass += m;
+    }
+
+    if (totalMass <= 1e-8)
+        return;
+
+    c /= totalMass;
+
+    // Covariance A = sum_i m_i * (x_i - c) * r_i^T
+    float3x3 A = float3x3(
+        0, 0, 0,
+        0, 0, 0,
+        0, 0, 0
+    );
+
+    for (int k2 = 0; k2 < rigidCount; k2++)
+    {
+        int idx2 = rigidStart + k2;
+        ParticleData p2 = Particles[idx2];
+
+        float m2 = p2.invMass > 0.0 ? 1.0 / p2.invMass : 0.0;
+
+        float3 q = p2.predicted.xyz - c;
+        float3 r = p2.rest.xyz;
+
+        A[0][0] += m2 * q.x * r.x;
+        A[0][1] += m2 * q.x * r.y;
+        A[0][2] += m2 * q.x * r.z;
+
+        A[1][0] += m2 * q.y * r.x;
+        A[1][1] += m2 * q.y * r.y;
+        A[1][2] += m2 * q.y * r.z;
+
+        A[2][0] += m2 * q.z * r.x;
+        A[2][1] += m2 * q.z * r.y;
+        A[2][2] += m2 * q.z * r.z;
+    }
+
+    float3x3 Q = PolarRotation(A);
+
+    float stiffness = saturate(shapeMatchingStiffness);
+
+    for (int k3 = 0; k3 < rigidCount; k3++)
+    {
+        int idx3 = rigidStart + k3;
+        ParticleData p3 = Particles[idx3];
+
+        float3 target = c + MulMatVec(Q, p3.rest.xyz);
+
+        p3.predicted.xyz = lerp(p3.predicted.xyz, target, stiffness);
+        p3.predicted.xyz = ClampToBox(p3.predicted.xyz);
+
+        Particles[idx3] = p3;
+    }
+}
+
+[numthreads(THREADS, 1, 1)]
 void UpdateVelocityFinalize(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData p = Particles[id.x];
 
-    float3 newV = (p.predicted.xyz - p.position.xyz) / dt;
+    float3 oldPos = p.position.xyz;
+    float3 newPos = p.predicted.xyz;
 
-    // --- box damping ---
-    float3 minB = boxMin.xyz + particleRadius.xxx;
-    float3 maxB = boxMax.xyz - particleRadius.xxx;
+    float3 newV = (newPos - oldPos) / dt;
 
-    if (p.predicted.x <= minB.x + 1e-5 && newV.x < 0.0) newV.x *= damp;
-    if (p.predicted.x >= maxB.x - 1e-5 && newV.x > 0.0) newV.x *= damp;
+    float3 radius = float3(particleRadius, particleRadius, particleRadius);
+    float3 minB = boxMin.xyz + radius;
+    float3 maxB = boxMax.xyz - radius;
 
-    if (p.predicted.y <= minB.y + 1e-5 && newV.y < 0.0) newV.y *= damp;
-    if (p.predicted.y >= maxB.y - 1e-5 && newV.y > 0.0) newV.y *= damp;
+    if (newPos.x <= minB.x + 1e-5 && newV.x < 0.0) newV.x *= damp;
+    if (newPos.x >= maxB.x - 1e-5 && newV.x > 0.0) newV.x *= damp;
 
-    if (p.predicted.z <= minB.z + 1e-5 && newV.z < 0.0) newV.z *= damp;
-    if (p.predicted.z >= maxB.z - 1e-5 && newV.z > 0.0) newV.z *= damp;
+    if (newPos.y <= minB.y + 1e-5 && newV.y < 0.0) newV.y *= damp;
+    if (newPos.y >= maxB.y - 1e-5 && newV.y > 0.0) newV.y *= damp;
 
-    // ВАЖНО: всегда инициализируем
-    float3 reflectedV = newV;
+    if (newPos.z <= minB.z + 1e-5 && newV.z < 0.0) newV.z *= damp;
+    if (newPos.z >= maxB.z - 1e-5 && newV.z > 0.0) newV.z *= damp;
 
-    // --- sphere collision via SDF ---
-    float dst = distanceField(p.predicted.xyz); // уже с учетом particleRadius
+    p.velocity = float4(newV, 0);
+    p.position = float4(newPos, 0);
 
-    if (dst < 0.0)
-    {
-        float3 n = getNormal(p.predicted.xyz);
-
-        // выталкивание из препятствия (dst отрицательный)
-        p.predicted.xyz -= n * dst;
-
-        // отражаем только если летим "внутрь" поверхности
-        float vn = dot(reflectedV, n);
-        if (vn < 0.0)
-        {
-            float restitution = 0.75;
-            reflectedV = restitution * (reflectedV - 2 * vn * n);
-        }
-
-        // опционально: чтобы скорость соответствовала уже исправленной позиции
-        // reflectedV = (p.predicted.xyz - p.position.xyz) / dt;
-    }
-
-    p.velocity = float4(reflectedV, 0);
-    p.position = float4(p.predicted.xyz, 0);
     Particles[id.x] = p;
 }
 
-[numthreads(THREADS,1,1)]
+[numthreads(THREADS, 1, 1)]
 void ApplyXSPHViscosity(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= N) return;
 
     ParticleData pi = Particles[id.x];
+
+    if (!IsFluid(pi))
+        return;
+
     uint count = NeighborCounters[id.x];
     uint start = id.x * (uint)MAX_NEIGHBORS;
 
-    float3 dv = float3(0,0,0);
+    float3 dv = float3(0, 0, 0);
 
     for (uint n = 0u; n < count; n++)
     {
         uint j = Neighbors[start + n];
         ParticleData pj = Particles[j];
+
+        if (!IsFluid(pj))
+            continue;
 
         float r = distance(pi.position.xyz, pj.position.xyz);
         float w = W_poly6(r);
@@ -420,7 +697,8 @@ void ApplyXSPHViscosity(uint3 id : SV_DispatchThreadID)
         dv += (pj.velocity.xyz - pi.velocity.xyz) * w;
     }
 
-    pi.velocity.xyz = pi.velocity.xyz + xsphC * dv;
+    pi.velocity.xyz += xsphC * dv;
     pi.velocity.w = 0;
+
     Particles[id.x] = pi;
 }

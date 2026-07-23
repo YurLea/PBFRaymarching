@@ -7,8 +7,8 @@ Material:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: QuadMat
-  m_Shader: {fileID: 4800000, guid: 05617486b68a2d14796a61d8c124a6bc, type: 3}
+  m_Name: SmokeQuadMat
+  m_Shader: {fileID: 4800000, guid: 49ebf0101474e104b9a51bd21a16cdec, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -61,28 +61,23 @@ Material:
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
-    - _Alpha: 1
+    - _Alpha: 0.8
     - _BumpScale: 1
     - _Cutoff: 0.5
     - _DetailNormalMapScale: 1
     - _DstBlend: 0
-    - _FluidAlpha: 1
-    - _FluidSize: 0.1
     - _GlossMapScale: 1
     - _Glossiness: 0.5
     - _GlossyReflections: 1
-    - _MaxSpeed: 16
+    - _LifeFade: 1
+    - _MaxSpeed: 15
     - _Metallic: 0
     - _MinSpeed: 0
     - _Mode: 0
     - _OcclusionStrength: 1
     - _Parallax: 0.02
-    - _RigidAlpha: 1
-    - _RigidSizeMul: 1
-    - _Size: 0.1
+    - _Size: 0.03
     - _SmoothnessTextureChannel: 0
-    - _SolidAlpha: 1
-    - _SolidSize: 0.16
     - _SpecularHighlights: 1
     - _SrcBlend: 1
     - _UVSec: 0

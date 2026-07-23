@@ -262,14 +262,20 @@ MonoBehaviour:
   boxMin: {x: 0, y: 0, z: 0}
   boxMax: {x: 9.5, y: 18, z: 6.5}
   particleRadius: 0.2
-  damp: -0.5
+  damp: -0.9
   Nx: 10
   Ny: 45
   Nz: 22
   spacing: 0.25
+  spherePosition: {x: 1, y: 1, z: 4}
+  sphereRadius: 0.75
+  sphereParticleSpacing: 0.25
+  solidParticleMass: 0.5
+  shapeMatchingStiffness: 1
+  solidDensityScale: 1
+  contactSOR: 1
+  stabilizationIterations: 3
   useUnityDeltaTime: 0
-  spherePosition: {x: 1.56, y: 1.62, z: 3}
-  sphereRadius: 1.58
 --- !u!4 &711951255
 Transform:
   m_ObjectHideFlags: 0
@@ -407,7 +413,7 @@ Transform:
   m_GameObject: {fileID: 963194225}
   serializedVersion: 2
   m_LocalRotation: {x: 0.10567535, y: 0.29331383, z: -0.03264126, w: 0.94959694}
-  m_LocalPosition: {x: -0.15, y: 0.87, z: -0.43}
+  m_LocalPosition: {x: -6.8, y: 7.2, z: -10.2}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -427,7 +433,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   sim: {fileID: 711951254}
   material: {fileID: 2100000, guid: 0039c7f4aa9b9df489bd9fd4007e8e5e, type: 2}
-  size: 0.1
+  fluidSize: 0.1
+  solidSize: 0.16
   minSpeed: 0
   maxSpeed: 16
   drawInSceneView: 1
