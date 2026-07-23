@@ -190,8 +190,8 @@ public class PBFRaymarch : MonoBehaviour
         _raymarchMat.SetFloat("hue", hue);
         
         // Параметры тестовой сферы
-        _raymarchMat.SetVector("spherePosition", spherePosition);
-        _raymarchMat.SetFloat("sphereRadius", sphereRadius);
+        _raymarchMat.SetVector("spherePosition", sim.spherePosition);
+        _raymarchMat.SetFloat("sphereRadius", sim.sphereRadius);
         
         // Параметры тени тестовой сферы
         _raymarchMat.SetFloat("shadowSoftness", shadowSoftness);

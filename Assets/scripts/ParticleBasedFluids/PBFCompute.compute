@@ -56,6 +56,9 @@ float4 boxMax;       // xyz
 float4 gridCellSize; // xyz
 int4   gridResolution; // xyz
 
+float3 spherePosition;
+float sphereRadius;
+
 float W_poly6(float r)
 {
     if (r >= h) return 0.0;
@@ -315,6 +318,34 @@ void ApplyDeltaAndCollide(uint3 id : SV_DispatchThreadID)
     Particles[id.x] = p;
 }
 
+float sdSphere(float3 p, float s)
+{
+    return length(p) - s;
+}
+
+float distanceField(float3 p)
+{
+    // расширяем сферу на радиус частицы
+    return sdSphere(p - spherePosition, sphereRadius + particleRadius);
+}
+
+float3 getNormal(float3 p)
+{
+    // 0.001 может быть слишком мало/много в зависимости от масштаба сцены
+    float eps = max(0.001, particleRadius * 0.25);
+
+    float3 ex = float3(eps, 0, 0);
+    float3 ey = float3(0, eps, 0);
+    float3 ez = float3(0, 0, eps);
+
+    float3 n = float3(
+        distanceField(p + ex) - distanceField(p - ex),
+        distanceField(p + ey) - distanceField(p - ey),
+        distanceField(p + ez) - distanceField(p - ez)
+    );
+    return normalize(n);
+}
+
 [numthreads(THREADS,1,1)]
 void UpdateVelocityFinalize(uint3 id : SV_DispatchThreadID)
 {
@@ -324,6 +355,7 @@ void UpdateVelocityFinalize(uint3 id : SV_DispatchThreadID)
 
     float3 newV = (p.predicted.xyz - p.position.xyz) / dt;
 
+    // --- box damping ---
     float3 minB = boxMin.xyz + particleRadius.xxx;
     float3 maxB = boxMax.xyz - particleRadius.xxx;
 
@@ -336,9 +368,33 @@ void UpdateVelocityFinalize(uint3 id : SV_DispatchThreadID)
     if (p.predicted.z <= minB.z + 1e-5 && newV.z < 0.0) newV.z *= damp;
     if (p.predicted.z >= maxB.z - 1e-5 && newV.z > 0.0) newV.z *= damp;
 
-    p.velocity = float4(newV, 0);
-    p.position = float4(p.predicted.xyz, 0);
+    // ВАЖНО: всегда инициализируем
+    float3 reflectedV = newV;
 
+    // --- sphere collision via SDF ---
+    float dst = distanceField(p.predicted.xyz); // уже с учетом particleRadius
+
+    if (dst < 0.0)
+    {
+        float3 n = getNormal(p.predicted.xyz);
+
+        // выталкивание из препятствия (dst отрицательный)
+        p.predicted.xyz -= n * dst;
+
+        // отражаем только если летим "внутрь" поверхности
+        float vn = dot(reflectedV, n);
+        if (vn < 0.0)
+        {
+            float restitution = 0.75;
+            reflectedV = restitution * (reflectedV - 2 * vn * n);
+        }
+
+        // опционально: чтобы скорость соответствовала уже исправленной позиции
+        // reflectedV = (p.predicted.xyz - p.position.xyz) / dt;
+    }
+
+    p.velocity = float4(reflectedV, 0);
+    p.position = float4(p.predicted.xyz, 0);
     Particles[id.x] = p;
 }
 

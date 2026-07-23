@@ -40,6 +40,10 @@ public class PBFSim : MonoBehaviour
     [Header("Timing")]
     public bool useUnityDeltaTime = false; // если false — всегда используем dt как в sim
 
+    [Header("Sphere")] 
+    public Vector3 spherePosition;
+    public float sphereRadius;
+
     // === Доступ наружу (для рендера, если захотите) ===
     public ComputeBuffer ParticlesBuffer => particlesBuffer;
     public int ParticleCount => N;
@@ -203,6 +207,9 @@ public class PBFSim : MonoBehaviour
 
         pbfCS.SetVector("gridCellSize", new Vector4(cellSize.x, cellSize.y, cellSize.z, 0));
         pbfCS.SetInts("gridResolution", gridRes.x, gridRes.y, gridRes.z, 0);
+        
+        pbfCS.SetVector("spherePosition", spherePosition);
+        pbfCS.SetFloat("sphereRadius", sphereRadius);
     }
 
     void Update()
@@ -214,6 +221,7 @@ public class PBFSim : MonoBehaviour
     void Step(float frameDt)
     {
         if (N <= 0) return;
+        SetCommonParams();
 
         float stepDt = frameDt / Mathf.Max(1, substeps);
         pbfCS.SetFloat("dt", stepDt);
